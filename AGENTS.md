@@ -40,6 +40,23 @@ bundle exec rspec       # full suite (unit + integration)
 ruby -c lib/ruby_llm/code_mode.rb   # quick syntax check
 ```
 
+### Release flow
+
+Single source of truth for the version: the `VERSION` constant inside
+`lib/ruby_llm/code_mode.rb` (the gemspec parses it from the source).
+
+```bash
+bundle exec rake 'version:bump[minor]'   # bump version: major, minor or patch (default: patch)
+git commit -am "Bump version to X.Y.Z"
+bundle exec rake release                 # runs specs, then creates tag vX.Y.Z,
+                                         # pushes branch + tag to GitHub (origin)
+                                         # and pushes the gem to RubyGems
+```
+
+`rake release` refuses to run when the working tree is dirty or the tag
+already exists. It needs RubyGems credentials (~/.gem/credentials) for the
+`gem push` step. In zsh, quote the bump argument (`rake 'version:bump[minor]'`).
+
 No lint/typecheck configured yet (roadmap: rubocop).
 Do not commit without an explicit user request.
 
@@ -127,8 +144,6 @@ network. When writing prompts/examples, do not assume `require "csv"`.
 ### Infra
 - CI (GitHub Actions: rspec, Ruby 4.0)
 - rubocop + `.rubocop.yml` aligned with the security_box style
-- `rake release` to publish to RubyGems (needs homepage/metadata in the
-  gemspec)
 - Badge/CI in the README
 
 ## Functional reference example

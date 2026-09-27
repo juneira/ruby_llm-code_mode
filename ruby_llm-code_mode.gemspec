@@ -2,7 +2,8 @@
 
 Gem::Specification.new do |spec|
   spec.name = "ruby_llm-code_mode"
-  spec.version = "0.1.0"
+  spec.version = File.read("lib/ruby_llm/code_mode.rb")[/VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"/, 1]
+  raise "Version constant not found in lib/ruby_llm/code_mode.rb" unless spec.version
   spec.authors = ["Juneira"]
   spec.summary = "Secure sandboxed Ruby code execution tool for RubyLLM, powered by SecurityBox."
   spec.description = <<~DESC
@@ -22,4 +23,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency "security_box", ">= 0.6"
 
   spec.add_development_dependency "rspec", "~> 3.13"
+  spec.add_development_dependency "rake", "~> 13.2"
 end

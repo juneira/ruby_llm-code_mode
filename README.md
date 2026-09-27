@@ -108,3 +108,17 @@ every subsequent evaluation then takes a few hundred milliseconds.
 bundle install
 bundle exec rspec
 ```
+
+### Releasing
+
+The version lives in the `VERSION` constant of `lib/ruby_llm/code_mode.rb`
+(the gemspec parses it from the source).
+
+```bash
+rake version:bump[minor]          # bump: major, minor or patch (default: patch)
+git commit -am "Bump version to X.Y.Z"
+rake release                      # specs + git tag vX.Y.Z + push to GitHub + push gem to RubyGems
+```
+
+`rake release` refuses a dirty working tree or an existing tag and uses the
+RubyGems credentials from `~/.gem/credentials`.
