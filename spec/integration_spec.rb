@@ -4,6 +4,99 @@ require_relative "spec_helper"
 require "tmpdir"
 require "fileutils"
 
+module SandboxTools
+  class Adder < RubyLLM::Tool
+    description "Adds two integers"
+
+    parameter :a, type: "integer", description: "First addend"
+    parameter :b, type: "integer", description: "Second addend"
+
+    def execute(a:, b:)
+      { sum: a + b }
+    end
+  end
+
+  class Failer < RubyLLM::Tool
+    description "Always raises"
+
+    def execute
+      raise KeyError, "boom"
+    end
+  end
+end
+
+RSpec.describe RubyLLM::CodeMode, "integration (bound tools)" do
+  let(:tool_class) do
+    Class.new(described_class).tap do |klass|
+      klass.tool(SandboxTools::Adder)
+      klass.tool("failer" => SandboxTools::Failer)
+    end
+  end
+
+  let(:tool) { tool_class.new }
+
+  it "returns the bound tool result through SB.call" do
+    result = tool.execute(code: 'SB.call("adder", a: 1, b: 2)')
+
+    expect(result).to eq(status: "ok", value: { "sum" => 3 })
+  end
+
+  it "reports schema mistakes as an error hash inside value" do
+    result = tool.execute(code: 'SB.call("adder", a: 1)')
+
+    expect(result[:status]).to eq("ok")
+    expect(result[:value]).to eq("error" => "Invalid tool arguments: missing keyword: b")
+  end
+
+  it "surfaces handler failures as rescuable SB::ToolError" do
+    result = tool.execute(code: <<~RUBY)
+      begin
+        SB.call("failer")
+        "no raise"
+      rescue SB::ToolError => e
+        "rescued: \#{e.message}"
+      end
+    RUBY
+
+    expect(result).to eq(status: "ok", value: "rescued: boom")
+  end
+
+  it "fails the evaluation when SB::ToolError is not rescued" do
+    result = tool.execute(code: 'SB.call("failer")')
+
+    expect(result[:status]).to eq("error")
+    expect(result[:error]["class"]).to eq("SB::ToolError")
+    expect(result[:error]["message"]).to eq("boom")
+  end
+
+  it "raises SB::UnknownTool for names that were not bound" do
+    result = tool.execute(code: <<~RUBY)
+      begin
+        SB.call("nope")
+        "no raise"
+      rescue SB::UnknownTool => e
+        "unknown: \#{e.message}"
+      end
+    RUBY
+
+    expect(result).to eq(status: "ok", value: "unknown: unknown rpc: nope")
+  end
+
+  it "rejects non-hash arguments with a tool error" do
+    result = tool.execute(code: <<~RUBY)
+      begin
+        SB.call("adder", [1, 2])
+        "no raise"
+      rescue SB::ToolError => e
+        "bad args: \#{e.message}"
+      end
+    RUBY
+
+    expect(result[:status]).to eq("ok")
+    expect(result[:value]).to start_with('bad args: tool "adder" expects a hash')
+  end
+end
+
 RSpec.describe RubyLLM::CodeMode, "integration (real sandbox)" do
   around do |example|
     Dir.mktmpdir do |read_only_dir|

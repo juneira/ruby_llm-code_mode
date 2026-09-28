@@ -7,7 +7,8 @@ Instructions for coding agents working on this repository.
 `ruby_llm-code_mode` is a gem exposing the `RubyLLM::CodeMode` tool for
 [RubyLLM](https://rubyllm.com): execution of **model-generated** Ruby code
 inside the secure [SecurityBox](https://rubygems.org/gems/security_box)
-sandbox (ruby.wasm + wasmtime), with host-folder mounts declared via DSL.
+sandbox (ruby.wasm + wasmtime), with host-folder mounts declared via DSL and
+host `RubyLLM::Tool`s bound for the guest to call via `SB.call`.
 
 - Gem: `ruby_llm-code_mode` v0.1.0, Ruby >= 4.0, MIT
 - Namespace: class `RubyLLM::CodeMode` (subclass of `RubyLLM::Tool`)
@@ -17,8 +18,8 @@ sandbox (ruby.wasm + wasmtime), with host-folder mounts declared via DSL.
 ## Structure
 
 ```
-lib/ruby_llm/code_mode.rb      EVERYTHING of the gem (class + DSL + Mount Struct + version)
-spec/code_mode_spec.rb         unit specs (DSL, description, configuration, format_result)
+lib/ruby_llm/code_mode.rb      EVERYTHING of the gem (class + DSL + Mount/ToolEntry Structs + version)
+spec/code_mode_spec.rb         unit specs (DSL, description, configuration, rpc handlers, format_result)
 spec/integration_spec.rb       integration specs (real sandbox, real wasm)
 spec/spec_helper.rb
 sample/csv_reader/             functional example (OpenRouter, deepseek-v4.1-flash)
@@ -82,9 +83,29 @@ Do not commit without an explicit user request.
    "timeout", "fuel_exhausted", "memory_limit", "sandbox_error"), `value`
    (status ok), `error` (security_box hash with class/message/backtrace, or
    textual message for limits), `stdout`/`stderr` when non-empty.
-6. **Subclasses inherit mounts** (the `inherited` hook copies `@mounts` and
-   clears the memoized `@configuration`).
+6. **Subclasses inherit mounts and tools** (the `inherited` hook copies
+   `@mounts` and `@tools` — entries/instances are shared — and clears the
+   memoized `@configuration`).
 7. **Sandbox reused per tool instance** (`@sandbox ||= Sandbox.new(configuration)`).
+8. **Bound tools (v2)**: `tool(ToolClass)`, `tool(instance)` or
+   `tool("name" => Tool)` registers a `RubyLLM::Tool` (fail-fast
+   `ArgumentError` at definition: must be a Tool, non-empty name, unique
+   name, max `SecurityBox::Rpcs::MAX_RPCS` = 64, never a `CodeMode`
+   descendant). The name is derived from the class-name **leaf**
+   (`MyApp::Tools::Weather` → `weather`, same algorithm as `tool_name`) —
+   the base `RubyLLM::Tool.tool_name` would leak the namespace. The class is
+   instantiated once at definition; every call shares that instance. The
+   handler is `->(args) { entry.tool.call(**args) }`: `Tool#call` symbolizes
+   string keys and validates required/unknown keywords (schema mistakes come
+   back as RubyLLM's `{ error: "Invalid tool arguments: ..." }` hash); any
+   exception propagates → guest sees `SB::ToolError` (class + message only).
+   Non-Hash args raise `ArgumentError` ("expects a hash of arguments").
+   Handlers go into `configuration` (`rpcs:`) — excluded from the
+   fingerprint by security_box. The description gains a
+   "## Host tools (call with SB.call)" section (intro + name/description +
+   `- \`param\` (type, required|optional) — desc` lines) only when tools
+   exist; the RPC transcript (`Result#rpcs`) is deliberately NOT forwarded
+   to the model.
 
 ## Essential knowledge about the dependencies
 
@@ -99,9 +120,17 @@ Do not commit without an explicit user request.
 - `SecurityBox::Mounts.normalize` validates everything;
   `InvalidConfiguration`/`ImageMissing` are rescued in `execute` → they become
   `{status: "sandbox_error", error: {...}}`
-- Host RPC (basis of v2): `c.rpc "name" => handler` on the builder; guest calls
-  `SB.call(name, args)`; `Result#rpcs` carries the transcript; max 1000
-  calls/eval
+- Host RPC: `Configuration.build(rpcs: { "name" => callable })` — validated
+  by `SecurityBox::Rpcs.normalize` (non-empty unique String names, handlers
+  respond to `call`, max 64, `Rpcs::MAX_RPCS`); excluded from the config
+  fingerprint. Guest: `SB.call("name", q: "x")` or `SB.call("name", hash)`.
+  Handler receives ONE positional arg: the JSON-parsed args (string keys,
+  always a Hash unless the guest passed a non-object); return value is JSON
+  round-tripped (non-serializable → inspect string); any exception →
+  guest-rescuable `SB::ToolError` (class + message, no backtrace); unbound
+  name → `SB::UnknownTool`; limits: 1000 calls/eval, 1 MiB per response
+  (both → `SB::ToolError`). `Result#rpcs` carries the frozen transcript
+  (nil when no calls). RactorPool rejects rpcs (plain Sandbox is fine)
 - Performance: ~600ms per eval with a warm cache; ~15s on first compilation
   (cache in `~/.cache/security_box/modules`); `SecurityBox.warmup` pays it up
   front
@@ -125,15 +154,6 @@ network. When writing prompts/examples, do not assume `require "csv"`.
 
 ## Roadmap / next steps
 
-### v2 — "Tools" section in the description (priority 1)
-- DSL `tool "name" => handler, description: "..."` (or `rpc`) on the class:
-  registers host-side handlers the guest calls via `SB.call`
-- `build_description` gains a "## Tools" section listing name + description +
-  args
-- Handlers go into `configuration` (`rpcs:`); excluding them from the
-  fingerprint is security_box behavior
-- Test the limits: 1000 calls/eval, 1MiB per response
-
 ### v1.x improvements
 - DSL for configurable limits (`limits timeout_ms:, fuel_ms:, memory_size:`)
 - Warn at definition time if the host path does not exist (today it only
@@ -150,6 +170,8 @@ network. When writing prompts/examples, do not assume `require "csv"`.
 
 `sample/csv_reader/csv_reader.rb` runs end to end (OpenRouter +
 deepseek-v4.1-flash): read-only mount `data/` → `/data`, mount_rw `out/` →
-`/workspace`; the model analyzes the CSV in the sandbox and writes `report.md`
-to the host. Use it as the template for new samples and for testing changes
-to the gem.
+`/workspace`, and a bound `SalesNotes` host tool (called by the guest via
+`SB.call("sales_notes", note: ...)`, appends to `out/notes.log`); the model
+analyzes the CSV in the sandbox, writes `report.md` to the host and records a
+finding through the bound tool. Use it as the template for new samples and for
+testing changes to the gem.

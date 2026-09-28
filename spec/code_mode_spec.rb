@@ -2,6 +2,35 @@
 
 require_relative "spec_helper"
 
+module SpecTools
+  class Adder < RubyLLM::Tool
+    description "Adds two integers"
+
+    parameter :a, type: "integer", description: "First addend"
+    parameter :b, type: "integer", description: "Second addend"
+
+    def execute(a:, b:)
+      { sum: a + b }
+    end
+  end
+
+  class Echo < RubyLLM::Tool
+    description "Echoes its message"
+
+    parameter :message, type: "string", required: false, description: "Text to echo"
+
+    def execute(message: "empty")
+      { echoed: message }
+    end
+  end
+
+  class Bare < RubyLLM::Tool
+    def execute(**)
+      nil
+    end
+  end
+end
+
 RSpec.describe RubyLLM::CodeMode do
   it "is a RubyLLM::Tool" do
     expect(described_class.superclass).to eq(RubyLLM::Tool)
@@ -77,6 +106,97 @@ RSpec.describe RubyLLM::CodeMode do
     end
   end
 
+  describe ".tool" do
+    it "registers a tool class and derives the name from tool_name" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Adder)
+
+      entry = klass.tools["adder"]
+      expect(entry).to be_a(described_class::ToolEntry)
+      expect(entry.name).to eq("adder")
+      expect(entry.tool).to be_an_instance_of(SpecTools::Adder)
+    end
+
+    it "registers a tool instance as-is" do
+      klass = Class.new(described_class)
+      instance = SpecTools::Echo.new
+      klass.tool(instance)
+
+      expect(klass.tools["echo"].tool).to equal(instance)
+    end
+
+    it "accepts an explicit name via a one-pair hash" do
+      klass = Class.new(described_class)
+      klass.tool("sum" => SpecTools::Adder)
+
+      expect(klass.tools["sum"].tool).to be_an_instance_of(SpecTools::Adder)
+    end
+
+    it "accepts an explicit name via kwargs" do
+      klass = Class.new(described_class)
+      klass.tool(sum: SpecTools::Adder)
+
+      expect(klass.tools.key?("sum")).to be(true)
+    end
+
+    it "rejects anything that is not a RubyLLM::Tool class or instance" do
+      klass = Class.new(described_class)
+
+      expect { klass.tool(Object) }
+        .to raise_error(ArgumentError, /expected a RubyLLM::Tool/)
+      expect { klass.tool("x" => "not a tool") }
+        .to raise_error(ArgumentError, /expected a RubyLLM::Tool/)
+      expect { klass.tool }
+        .to raise_error(ArgumentError, /expected a RubyLLM::Tool/)
+      expect { klass.tool("a" => SpecTools::Adder, "b" => SpecTools::Echo) }
+        .to raise_error(ArgumentError, /exactly one/)
+      expect(klass.tools).to be_empty
+    end
+
+    it "rejects an empty derived name (anonymous tool class)" do
+      klass = Class.new(described_class)
+
+      expect { klass.tool(Class.new(RubyLLM::Tool)) }
+        .to raise_error(ArgumentError, /non-empty/)
+      expect(klass.tools).to be_empty
+    end
+
+    it "rejects duplicate names at definition time" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Adder)
+
+      expect { klass.tool("adder" => SpecTools::Echo) }
+        .to raise_error(ArgumentError, /already bound/)
+      expect(klass.tools.size).to eq(1)
+    end
+
+    it "rejects more than 64 tools at definition time" do
+      klass = Class.new(described_class)
+      64.times { |i| klass.tool("t#{i}" => SpecTools::Adder) }
+
+      expect { klass.tool("t65" => SpecTools::Adder) }
+        .to raise_error(ArgumentError, /limit is 64/)
+    end
+
+    it "rejects binding a CodeMode inside another CodeMode" do
+      klass = Class.new(described_class)
+
+      expect { klass.tool(Class.new(described_class)) }
+        .to raise_error(ArgumentError, /CodeMode/)
+      expect(klass.tools).to be_empty
+    end
+
+    it "inherits parent tools into subclasses without sharing the hash" do
+      parent = Class.new(described_class)
+      parent.tool(SpecTools::Adder)
+      child = Class.new(parent)
+      child.tool(SpecTools::Echo)
+
+      expect(child.tools.keys).to eq(%w[adder echo])
+      expect(parent.tools.size).to eq(1)
+    end
+  end
+
   describe ".description" do
     it "refuses to be set by hand" do
       expect { described_class.description("custom") }
@@ -103,6 +223,33 @@ RSpec.describe RubyLLM::CodeMode do
       expect(description).to include("## Read-write folders")
       expect(description).to include("- `/workspace` — generated artifacts")
       expect(description.index("Read-only folders")).to be < description.index("Read-write folders")
+    end
+
+    it "omits the host-tools section when no tools are bound" do
+      klass = Class.new(described_class)
+      expect(klass.description).not_to include("Host tools")
+    end
+
+    it "lists bound tools with their parameters after the folder sections" do
+      klass = Class.new(described_class)
+      klass.mount(source: "data", dest: "/data", description: "d")
+      klass.tool(SpecTools::Adder)
+      klass.tool(SpecTools::Echo)
+      description = klass.description
+
+      expect(description).to include("## Host tools (call with SB.call)")
+      expect(description).to include("SB.call('name', key: value)")
+      expect(description).to include("- `adder` — Adds two integers")
+      expect(description).to include("  - `a` (integer, required) — First addend")
+      expect(description).to include("  - `b` (integer, required) — Second addend")
+      expect(description).to include("  - `message` (string, optional) — Text to echo")
+      expect(description.index("Read-only folders")).to be < description.index("Host tools")
+    end
+
+    it "lists a tool without description or parameters as a bare line" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Bare)
+      expect(klass.description).to end_with("- `bare`")
     end
 
     it "omits the separator when a mount has no description" do
@@ -136,6 +283,45 @@ RSpec.describe RubyLLM::CodeMode do
 
       child = Class.new(klass)
       expect(child.configuration).not_to equal(klass.configuration)
+    end
+
+    it "passes the bound tools as host rpc handlers" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Adder)
+      klass.tool(SpecTools::Echo)
+      config = klass.configuration
+
+      expect(config.rpcs.keys).to eq(%w[adder echo])
+      expect(config.rpcs["adder"]).to respond_to(:call)
+    end
+
+    it "gives handlers string-keyed args that reach execute with symbol keys" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Adder)
+
+      result = klass.configuration.rpcs["adder"].call({ "a" => 1, "b" => 2 })
+      expect(result).to eq(sum: 3)
+    end
+
+    it "reports schema mistakes through RubyLLM's error convention" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Adder)
+
+      result = klass.configuration.rpcs["adder"].call({ "a" => 1 })
+      expect(result).to eq(error: "Invalid tool arguments: missing keyword: b")
+    end
+
+    it "rejects non-hash arguments with a clear message" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Adder)
+
+      expect { klass.configuration.rpcs["adder"].call([1, 2]) }
+        .to raise_error(ArgumentError, /expects a hash of arguments, got Array/)
+    end
+
+    it "leaves rpcs empty when no tools are bound" do
+      klass = Class.new(described_class)
+      expect(klass.configuration.rpcs).to eq({})
     end
   end
 

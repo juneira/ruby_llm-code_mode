@@ -9,6 +9,10 @@ module RubyLLM
 
     DEFAULT_TIMEOUT_MS = 30_000
     DEFAULT_FUEL_MS = 10_000
+    MAX_TOOLS = SecurityBox::Rpcs::MAX_RPCS
+
+    TOOL_USAGE = "tool expects a RubyLLM::Tool class or instance, " \
+                 'or exactly one "name" => tool pair'
 
     FIXED_DESCRIPTION = <<~DESC.freeze
       Executes Ruby code inside a secure sandbox and returns what it produced.
@@ -29,11 +33,23 @@ module RubyLLM
       class, message and backtrace are returned so you can fix and retry.
     DESC
 
+    HOST_TOOLS_INTRO = <<~DESC.freeze
+      Registered host tools are callable from inside the sandbox. Call one with
+      `SB.call('name', key: value)`: arguments must be JSON-serializable and become
+      the tool's keyword arguments, and the return value is the tool's result
+      (non-serializable values come back as their inspect string). Bad arguments
+      come back as an `error` hash; handler failures raise `SB::ToolError`
+      (rescuable); unknown names raise `SB::UnknownTool`. Limits: at most 1000
+      tool calls per execution and 1 MiB per result.
+    DESC
+
     Mount = Struct.new(:host, :guest, :mode, :description, keyword_init: true) do
       def payload
         { host: host, guest: guest, mode: mode }
       end
     end
+
+    ToolEntry = Struct.new(:name, :tool, keyword_init: true)
 
     class << self
       def tool_name
@@ -51,15 +67,38 @@ module RubyLLM
         add_mount(source, dest, :read_write, description)
       end
 
+      def tool(mapping = nil, **kwargs)
+        if !kwargs.empty?
+          raise ArgumentError, TOOL_USAGE unless kwargs.size == 1 && mapping.nil?
+
+          name, bound = kwargs.first
+          mapping = { name.to_s => bound }
+        end
+
+        if mapping.is_a?(Hash)
+          raise ArgumentError, TOOL_USAGE unless mapping.size == 1
+
+          name, bound = mapping.first
+          add_tool(bound, name.to_s)
+        else
+          add_tool(mapping, nil)
+        end
+      end
+
       def mounts
         @mounts ||= []
+      end
+
+      def tools
+        @tools ||= {}
       end
 
       def configuration
         @configuration ||= SecurityBox::Configuration.build(
           timeout_ms: DEFAULT_TIMEOUT_MS,
           fuel_ms: DEFAULT_FUEL_MS,
-          mounts: mounts.map(&:payload)
+          mounts: mounts.map(&:payload),
+          rpcs: build_rpcs
         )
       end
 
@@ -68,7 +107,8 @@ module RubyLLM
         [
           FIXED_DESCRIPTION.rstrip,
           folder_section("## Read-only folders (readable, never writable)", read_only),
-          folder_section("## Read-write folders (readable and writable)", read_write)
+          folder_section("## Read-write folders (readable and writable)", read_write),
+          tools_section
         ].compact.join("\n\n")
       end
 
@@ -87,6 +127,7 @@ module RubyLLM
       def inherited(subclass)
         super
         subclass.instance_variable_set(:@mounts, mounts.dup)
+        subclass.instance_variable_set(:@tools, tools.dup)
         subclass.instance_variable_set(:@configuration, nil)
       end
 
@@ -106,6 +147,58 @@ module RubyLLM
               "Invalid mount #{source.inspect} => #{dest.inspect}: #{e.message}"
       end
 
+      def add_tool(bound, name)
+        instance = normalize_bound_tool(bound)
+        if instance.is_a?(RubyLLM::CodeMode)
+          raise ArgumentError, "cannot bind a RubyLLM::CodeMode inside another CodeMode"
+        end
+
+        name = (name || leaf_tool_name(instance.class)).to_s
+        raise ArgumentError, "tool name must be a non-empty String" if name.empty?
+        raise ArgumentError, "tool name #{name.inspect} is already bound" if tools.key?(name)
+        if tools.size >= MAX_TOOLS
+          raise ArgumentError, "too many tools (#{tools.size + 1}); the limit is #{MAX_TOOLS}"
+        end
+
+        tools[name] = ToolEntry.new(name: name, tool: instance)
+      end
+
+      def normalize_bound_tool(bound)
+        if bound.is_a?(Class)
+          unless bound <= RubyLLM::Tool
+            raise ArgumentError, "expected a RubyLLM::Tool (class or instance), got #{bound.inspect}"
+          end
+
+          bound.new
+        elsif bound.is_a?(RubyLLM::Tool)
+          bound
+        else
+          raise ArgumentError, "expected a RubyLLM::Tool (class or instance), got #{bound.inspect}"
+        end
+      end
+
+      # Leaf-only name derivation, like .tool_name — the guest has no use for
+      # the RubyLLM namespace ("MyApp::Tools::Search" binds as "search").
+      def leaf_tool_name(klass)
+        leaf = klass.name.to_s.split('::').last
+        return "" unless leaf
+
+        RubyLLM::Support::Utils.underscore(leaf).delete_suffix('_tool')
+      end
+
+      def build_rpcs
+        tools.transform_values { |entry| ->(args) { call_bound_tool(entry, args) } }
+      end
+
+      def call_bound_tool(entry, args)
+        unless args.is_a?(Hash)
+          raise ArgumentError,
+                "tool #{entry.name.inspect} expects a hash of arguments, got #{args.class}"
+        end
+
+        entry.tool.call(**args)
+      end
+
       def folder_section(header, entries)
         return nil if entries.empty?
 
@@ -115,6 +208,39 @@ module RubyLLM
           line
         end
         [header, *lines].join("\n")
+      end
+
+      def tools_section
+        return nil if tools.empty?
+
+        [
+          "## Host tools (call with SB.call)",
+          HOST_TOOLS_INTRO.rstrip,
+          *tools.values.flat_map { |entry| tool_lines(entry) }
+        ].join("\n")
+      end
+
+      def tool_lines(entry)
+        line = "- `#{entry.name}`"
+        description = entry.tool.description.to_s
+        line += " — #{description}" unless description.empty?
+
+        [line, *param_lines(entry.tool).map { |param| "  #{param}" }]
+      end
+
+      def param_lines(tool)
+        schema = tool.parameters_schema || {}
+        properties = schema["properties"] || {}
+        required = schema["required"] || []
+
+        properties.filter_map do |param, spec|
+          spec ||= {}
+          status = required.include?(param) ? "required" : "optional"
+          line = "- `#{param}` (#{spec["type"] || "string"}, #{status})"
+          description = spec["description"].to_s
+          line += " — #{description}" unless description.empty?
+          line
+        end
       end
     end
 
