@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require_relative "../../lib/ruby_llm/code_mode"
+
+SAMPLE_DIR = __dir__
 
 class CsvReader < RubyLLM::CodeMode
   mount    source: File.join(SAMPLE_DIR, "data"), dest: "/data",      description: "Sales CSVs. sales.csv has the columns: date, product, category, units, unit_price"
