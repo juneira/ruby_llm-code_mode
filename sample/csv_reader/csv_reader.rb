@@ -6,8 +6,13 @@ require_relative "../../lib/ruby_llm/code_mode"
 SAMPLE_DIR = __dir__
 
 class CsvReader < RubyLLM::CodeMode
-  mount    source: File.join(SAMPLE_DIR, "data"), dest: "/data",      description: "Sales CSVs. sales.csv has the columns: date, product, category, units, unit_price"
-  mount_rw source: File.join(SAMPLE_DIR, "out"),  dest: "/workspace", description: "Write generated reports and artifacts here"
+  mount    source: File.join(SAMPLE_DIR, "data"),
+           dest: "/data",
+           description: "Sales CSVs. sales.csv has the columns: date, product, category, units, unit_price"
+
+  mount_rw source: File.join(SAMPLE_DIR, "out"),
+           dest: "/workspace",
+           description: "Write generated reports and artifacts here"
 end
 
 RubyLLM.configure do |config|
