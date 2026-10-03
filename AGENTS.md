@@ -23,6 +23,8 @@ spec/code_mode_spec.rb         unit specs (DSL, description, configuration, rpc 
 spec/integration_spec.rb       integration specs (real sandbox, real wasm)
 spec/spec_helper.rb
 sample/csv_reader/             functional example (OpenRouter, deepseek-v4.1-flash)
+sample/ruby_llm_mcp/           functional example binding RubyLLM::MCP server tools
+                               (learn.microsoft.com/api/mcp; needs a local ruby_llm clone)
 ruby_llm-code_mode.gemspec     deps: ruby_llm >= 2.0, security_box >= 0.6
 ```
 
@@ -106,6 +108,28 @@ Do not commit without an explicit user request.
    `- \`param\` (type, required|optional) — desc` lines) only when tools
    exist; the RPC transcript (`Result#rpcs`) is deliberately NOT forwarded
    to the model.
+9. **`mcp` (v2.1)**: `mcp(server)`, `mcp(ServerClass)`, `mcp(ServerClass,
+   user: ...)`, `mcp(s1, s2, ...)` or arrays — connects
+   [RubyLLM::MCP](https://rubyllm.com/next/mcp/) server(s) at definition and
+   binds all their tools. Validation is fail-fast: every argument must be a
+   `RubyLLM::MCP` instance or subclass (classes are auto-instantiated with
+   the keyword inputs; inputs with ready instances raise), and
+   `RubyLLM::MCP` being undefined (released RubyLLM 2.0) raises a clear
+   `ArgumentError`. Server tools bind under `instance.name` when the tool
+   responds to `server_name` (MCP tools keep their server/prefixed name),
+   else the leaf-only `leaf_tool_name` — **never** `Tool#name` for regular
+   tools, because released RubyLLM 2.0's `Tool#name`/`tool_name` uses the
+   FULL class name (namespace leaks). A tool whose name is already bound is
+   re-bound as `<server_name>_tool`; a name that still collides after
+   prefixing raises. Fails fast with a full rollback of `@tools` AND `@mcps`
+   on any exception (including server connection errors). Bound servers are
+   recorded as `McpEntry` structs (`name`, `mcp`, `instructions`) in `mcps`
+   (inherited by subclasses via the `inherited` hook); instructions are
+   snapshotted at definition (no network during description builds) and
+   rendered in a "## Server notes" description section. Bound MCP tools
+   return `RubyLLM::MCP::Result`; `call_bound_tool` normalizes it into
+   `{text:, structured:, error:}` for the guest (guarded by
+   `defined?(RubyLLM::MCP::Result)`, so the gem still works with RubyLLM 2.0).
 
 ## Essential knowledge about the dependencies
 
@@ -174,4 +198,8 @@ deepseek-v4.1-flash): read-only mount `data/` → `/data`, mount_rw `out/` →
 `SB.call("sales_notes", note: ...)`, appends to `out/notes.log`); the model
 analyzes the CSV in the sandbox, writes `report.md` to the host and records a
 finding through the bound tool. Use it as the template for new samples and for
-testing changes to the gem.
+testing changes to the gem. For MCP integration, `sample/ruby_llm_mcp/` is the
+reference: it connects the server built by
+`RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")` with `mcp` and runs
+against the live server (`dry_run.rb` verifies the wiring without spending
+LLM tokens).

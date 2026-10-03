@@ -51,6 +51,8 @@ module RubyLLM
 
     ToolEntry = Struct.new(:name, :tool, keyword_init: true)
 
+    McpEntry = Struct.new(:name, :mcp, :instructions, keyword_init: true)
+
     class << self
       def tool_name
         leaf = name.to_s.split('::').last
@@ -85,12 +87,52 @@ module RubyLLM
         end
       end
 
+      # Connects MCP server(s) and binds all their tools into the sandbox:
+      #
+      #   docs = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
+      #
+      #   class DocsResearch < RubyLLM::CodeMode
+      #     mcp docs                    # instance
+      #     mcp MicrosoftDocs           # or the class (instantiated with .new)
+      #     mcp Linear, user: current_user  # class + declared inputs
+      #     mcp Docs, Github            # several servers / arrays at once
+      #   end
+      #
+      # Server tools keep their names (`microsoft_docs_search`, ...); a tool
+      # whose name is already bound is re-bound as "<server>_tool". The
+      # servers' instructions (when the server sends them) are snapshotted
+      # at definition and listed in the description under "## Server notes".
+      # Fails fast: every argument must be a RubyLLM::MCP (class or
+      # instance), and if anything goes wrong — a server that cannot be
+      # reached, a name that stays colliding after prefixing — nothing is
+      # bound.
+      def mcp(*servers, **inputs)
+        flat = servers.flatten(1)
+        raise ArgumentError, "expected at least one RubyLLM::MCP server" if flat.empty?
+        unless inputs.empty? || flat.all?(Class)
+          raise ArgumentError, "inputs only apply when passing RubyLLM::MCP classes"
+        end
+
+        snapshot_tools = tools.dup
+        snapshot_mcps = mcps.dup
+        normalize_mcp_servers(flat, inputs).each { |server| bind_mcp_server(server) }
+        mcps
+      rescue StandardError
+        instance_variable_set(:@tools, snapshot_tools)
+        instance_variable_set(:@mcps, snapshot_mcps)
+        raise
+      end
+
       def mounts
         @mounts ||= []
       end
 
       def tools
         @tools ||= {}
+      end
+
+      def mcps
+        @mcps ||= []
       end
 
       def configuration
@@ -108,7 +150,8 @@ module RubyLLM
           FIXED_DESCRIPTION.rstrip,
           folder_section("## Read-only folders (readable, never writable)", read_only),
           folder_section("## Read-write folders (readable and writable)", read_write),
-          tools_section
+          tools_section,
+          server_notes_section
         ].compact.join("\n\n")
       end
 
@@ -128,6 +171,7 @@ module RubyLLM
         super
         subclass.instance_variable_set(:@mounts, mounts.dup)
         subclass.instance_variable_set(:@tools, tools.dup)
+        subclass.instance_variable_set(:@mcps, mcps.dup)
         subclass.instance_variable_set(:@configuration, nil)
       end
 
@@ -153,7 +197,7 @@ module RubyLLM
           raise ArgumentError, "cannot bind a RubyLLM::CodeMode inside another CodeMode"
         end
 
-        name = (name || leaf_tool_name(instance.class)).to_s
+        name = (name || tool_binding_name(instance)).to_s
         raise ArgumentError, "tool name must be a non-empty String" if name.empty?
         raise ArgumentError, "tool name #{name.inspect} is already bound" if tools.key?(name)
         if tools.size >= MAX_TOOLS
@@ -177,13 +221,21 @@ module RubyLLM
         end
       end
 
-      # Leaf-only name derivation, like .tool_name — the guest has no use for
-      # the RubyLLM namespace ("MyApp::Tools::Search" binds as "search").
+      # Leaf-only name derivation, like .tool_name — the guest has no use
+      # for the RubyLLM namespace ("MyApp::Tools::Search" binds as "search").
       def leaf_tool_name(klass)
         leaf = klass.name.to_s.split('::').last
         return "" unless leaf
 
         RubyLLM::Support::Utils.underscore(leaf).delete_suffix('_tool')
+      end
+
+      # Regular tools keep the leaf-only derivation; MCP tools carry their
+      # own (server) name, which is what they bind under inside the sandbox.
+      def tool_binding_name(instance)
+        return instance.name.to_s if instance.respond_to?(:server_name)
+
+        leaf_tool_name(instance.class)
       end
 
       def build_rpcs
@@ -196,7 +248,54 @@ module RubyLLM
                 "tool #{entry.name.inspect} expects a hash of arguments, got #{args.class}"
         end
 
-        entry.tool.call(**args)
+        normalize_result(entry.tool.call(**args))
+      end
+
+      # MCP tools return RubyLLM::MCP::Result objects; SecurityBox JSON
+      # round-trips handler returns, so give the guest plain data instead
+      # of an inspect string.
+      def normalize_result(value)
+        return value unless defined?(RubyLLM::MCP::Result) && value.is_a?(RubyLLM::MCP::Result)
+
+        { text: value.text, structured: value.structured, error: value.error? }
+      end
+
+      def normalize_mcp_servers(servers, inputs)
+        unless defined?(RubyLLM::MCP)
+          raise ArgumentError,
+                "RubyLLM::MCP is not available; mcp needs a ruby_llm version with MCP support"
+        end
+
+        servers.map do |server|
+          case server
+          when Class
+            unless server <= RubyLLM::MCP
+              raise ArgumentError, "expected a RubyLLM::MCP (class or instance), got #{server.inspect}"
+            end
+
+            server.new(**inputs)
+          when RubyLLM::MCP
+            server
+          else
+            raise ArgumentError, "expected a RubyLLM::MCP (class or instance), got #{server.inspect}"
+          end
+        end
+      end
+
+      def bind_mcp_server(server)
+        # Fetching .tools connects to the server; snapshot the instructions
+        # right after, so description builds never touch the network.
+        tools_list = server.tools
+        mcps << McpEntry.new(
+          name: server.name.to_s, mcp: server, instructions: server.instructions.to_s
+        )
+        tools_list.each { |tool| bind_mcp_tool(server, tool) }
+      end
+
+      def bind_mcp_tool(server, tool)
+        name = tool_binding_name(tool)
+        name = "#{server.name}_#{name}" if tools.key?(name) && !server.name.to_s.empty?
+        add_tool(tool, name)
       end
 
       def folder_section(header, entries)
@@ -218,6 +317,18 @@ module RubyLLM
           HOST_TOOLS_INTRO.rstrip,
           *tools.values.flat_map { |entry| tool_lines(entry) }
         ].join("\n")
+      end
+
+      def server_notes_section
+        notes = mcps.filter_map do |entry|
+          instructions = entry.instructions.to_s
+          next if instructions.empty?
+
+          "- **#{entry.name}** — #{instructions}"
+        end
+        return nil if notes.empty?
+
+        ["## Server notes", *notes].join("\n")
       end
 
       def tool_lines(entry)

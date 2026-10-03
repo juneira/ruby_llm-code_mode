@@ -1,0 +1,8 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+# RubyLLM::MCP is not published on RubyGems yet — use the local clone.
+gem "ruby_llm", path: "../../../ruby_llm"
+
+gemspec path: "../.."

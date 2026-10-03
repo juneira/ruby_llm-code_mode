@@ -29,6 +29,24 @@ module SpecTools
       nil
     end
   end
+
+  # Stands in for a RubyLLM::MCP::Tool: the name comes from the server,
+  # not from the class.
+  class Remote < RubyLLM::Tool
+    attr_reader :name, :server_name, :description, :parameters_schema
+
+    def initialize(name:, description: "Fake remote tool", parameters_schema: {})
+      super()
+      @name = name
+      @server_name = name
+      @description = description
+      @parameters_schema = parameters_schema
+    end
+
+    def execute(**)
+      {}
+    end
+  end
 end
 
 RSpec.describe RubyLLM::CodeMode do
@@ -197,6 +215,176 @@ RSpec.describe RubyLLM::CodeMode do
     end
   end
 
+  describe ".mcp" do
+    # Stands in for RubyLLM::MCP when the released gem (2.0) has none.
+    let(:mcp_base) do
+      Class.new do
+        attr_reader :name, :tools, :instructions
+
+        def initialize(name: "fake_server", tools: [], instructions: "")
+          @name = name
+          @tools = tools
+          @instructions = instructions
+        end
+      end
+    end
+
+    before { stub_const("RubyLLM::MCP", mcp_base) }
+
+    def fake_server(name: "docs", tools:, instructions: "")
+      Class.new(mcp_base).new(name: name, tools: tools, instructions: instructions)
+    end
+
+    it "binds a server's tools under their own names" do
+      klass = Class.new(described_class)
+      klass.mcp(fake_server(tools: [
+        SpecTools::Remote.new(name: "microsoft_docs_search"),
+        SpecTools::Remote.new(name: "microsoft_docs_fetch")
+      ]))
+
+      expect(klass.tools.keys).to eq(%w[microsoft_docs_search microsoft_docs_fetch])
+      expect(klass.mcps.map(&:name)).to eq(%w[docs])
+    end
+
+    it "accepts several servers, varargs and arrays" do
+      klass = Class.new(described_class)
+      klass.mcp(
+        fake_server(name: "docs", tools: [SpecTools::Remote.new(name: "docs_search")]),
+        [fake_server(name: "github", tools: [SpecTools::Remote.new(name: "list_issues")])]
+      )
+
+      expect(klass.tools.keys).to eq(%w[docs_search list_issues])
+      expect(klass.mcps.map(&:name)).to eq(%w[docs github])
+    end
+
+    it "instantiates a class argument" do
+      klass = Class.new(described_class)
+      server_class = Class.new(mcp_base)
+      klass.mcp(server_class)
+
+      expect(klass.mcps.first.mcp).to be_an_instance_of(server_class)
+      expect(klass.tools).to be_empty
+    end
+
+    it "instantiates a class argument with the declared inputs" do
+      klass = Class.new(described_class)
+      server_class = Class.new(mcp_base)
+      instance = fake_server(tools: [SpecTools::Remote.new(name: "list_issues")])
+      allow(server_class).to receive(:new).with(user: "juneira").and_return(instance)
+
+      klass.mcp(server_class, user: "juneira")
+
+      expect(klass.tools.keys).to eq(%w[list_issues])
+    end
+
+    it "rejects inputs when passing ready instances" do
+      klass = Class.new(described_class)
+
+      expect { klass.mcp(fake_server(tools: []), user: "juneira") }
+        .to raise_error(ArgumentError, /inputs only apply/)
+      expect(klass.mcps).to be_empty
+    end
+
+    it "rejects anything that is not a RubyLLM::MCP" do
+      klass = Class.new(described_class)
+
+      expect { klass.mcp(Object.new) }
+        .to raise_error(ArgumentError, /expected a RubyLLM::MCP/)
+      expect { klass.mcp(Object) }
+        .to raise_error(ArgumentError, /expected a RubyLLM::MCP/)
+      expect { klass.mcp }
+        .to raise_error(ArgumentError, /at least one/)
+      expect(klass.tools).to be_empty
+      expect(klass.mcps).to be_empty
+    end
+
+    it "auto-prefixes a colliding tool name with the server name" do
+      klass = Class.new(described_class)
+      klass.tool(SpecTools::Adder) # binds as "adder"
+
+      klass.mcp(fake_server(name: "github", tools: [
+        SpecTools::Remote.new(name: "adder"),
+        SpecTools::Remote.new(name: "list_issues")
+      ]))
+
+      expect(klass.tools.keys).to eq(%w[adder github_adder list_issues])
+    end
+
+    it "fails fast when even the prefixed name collides" do
+      klass = Class.new(described_class)
+
+      expect do
+        klass.mcp(
+          fake_server(name: "gitlab", tools: [SpecTools::Remote.new(name: "search")]),
+          fake_server(name: "gitlab", tools: [SpecTools::Remote.new(name: "search")]),
+          fake_server(name: "gitlab", tools: [SpecTools::Remote.new(name: "search")])
+        )
+      end.to raise_error(ArgumentError, /already bound/)
+      expect(klass.tools).to be_empty
+      expect(klass.mcps).to be_empty
+    end
+
+    it "rolls back everything when a server cannot be reached" do
+      klass = Class.new(described_class)
+      broken = fake_server(tools: [])
+      def broken.tools
+        raise "connection failed"
+      end
+
+      expect { klass.mcp(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]), broken) }
+        .to raise_error(RuntimeError, /connection failed/)
+      expect(klass.tools).to be_empty
+      expect(klass.mcps).to be_empty
+    end
+
+    it "inherits parent mcps into subclasses" do
+      parent = Class.new(described_class)
+      parent.mcp(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]))
+      child = Class.new(parent)
+
+      expect(child.mcps.map(&:name)).to eq(%w[docs])
+      expect(child.tools.keys).to eq(%w[docs_search])
+      expect(parent.mcps.size).to eq(1)
+    end
+
+    it "lists the tools' descriptions and schemas in the description" do
+      klass = Class.new(described_class)
+      klass.mcp(fake_server(tools: [SpecTools::Remote.new(
+        name: "docs_search",
+        description: "Search Microsoft documentation",
+        parameters_schema: {
+          "properties" => { "query" => { "type" => "string", "description" => "What to look for" } },
+          "required" => ["query"]
+        }
+      )]))
+      description = klass.description
+
+      expect(description).to include("- `docs_search` — Search Microsoft documentation")
+      expect(description).to include("  - `query` (string, required) — What to look for")
+    end
+
+    it "lists the servers' instructions under a Server notes section" do
+      klass = Class.new(described_class)
+      klass.mcp(
+        fake_server(name: "docs", tools: [SpecTools::Remote.new(name: "docs_search")],
+                    instructions: "Search official Microsoft docs."),
+        fake_server(name: "quiet", tools: [])
+      )
+      description = klass.description
+
+      expect(description).to include("## Server notes")
+      expect(description).to include("- **docs** — Search official Microsoft docs.")
+      expect(description).not_to include("**quiet**")
+      expect(description.index("Host tools")).to be < description.index("Server notes")
+    end
+
+    it "omits the Server notes section when no server sends instructions" do
+      klass = Class.new(described_class)
+      klass.mcp(fake_server(tools: []))
+      expect(klass.description).not_to include("Server notes")
+    end
+  end
+
   describe ".description" do
     it "refuses to be set by hand" do
       expect { described_class.description("custom") }
@@ -322,6 +510,24 @@ RSpec.describe RubyLLM::CodeMode do
     it "leaves rpcs empty when no tools are bound" do
       klass = Class.new(described_class)
       expect(klass.configuration.rpcs).to eq({})
+    end
+
+    it "normalizes MCP tool results into plain data for the guest" do
+      result_class = Class.new do
+        def text = "Azure Blob docs"
+        def structured = { "results" => [] }
+        def error? = false
+      end
+      stub_const("RubyLLM::MCP::Result", result_class)
+
+      remote = SpecTools::Remote.new(name: "docs_search")
+      allow(remote).to receive(:call).and_return(result_class.new)
+
+      klass = Class.new(described_class)
+      klass.tool(remote)
+
+      expect(klass.configuration.rpcs["docs_search"].call({}))
+        .to eq(text: "Azure Blob docs", structured: { "results" => [] }, error: false)
     end
   end
 

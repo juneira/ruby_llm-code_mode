@@ -50,7 +50,7 @@ a fixed description built from the declared mounts:
 - a **Read-only folders** section listing each `mount` as `` `/guest/path` — description``;
 - a **Read-write folders** section listing each `mount_rw`;
 - a **Host tools** section listing every bound `RubyLLM::Tool` with its
-  parameters, when any are bound with `tool`.
+  parameters, when any are bound with `tool` or `mcp`.
 
 The single parameter is `code` — a complete, self-contained Ruby script.
 
@@ -72,6 +72,7 @@ mount    source: host_path, dest: guest_path, description: "..."  # read-only
 mount_rw source: host_path, dest: guest_path, description: "..." # read-write
 tool     SomeRubyLLMTool                                          # host tool
 tool     "name" => SomeRubyLLMTool                                # explicit name
+mcp      SomeMcpServer                                            # MCP server (instance or class)
 ```
 
 - `source:` — folder on the host machine, relative to the process working
@@ -82,6 +83,9 @@ tool     "name" => SomeRubyLLMTool                                # explicit nam
 - `tool` — a `RubyLLM::Tool` class or instance; the name inside the sandbox
   is derived from the class-name leaf (`MyApp::Tools::Weather` → `weather`),
   or the explicit one from the one-pair form.
+- `mcp` — a `RubyLLM::MCP` instance or class (auto-instantiated, with the
+  server's declared inputs as keywords); all of the server's tools are bound
+  under their own names.
 
 Invalid declarations raise at class-definition time, so a misconfigured tool
 never reaches a live chat. Subclasses inherit their parent's mounts and tools.
@@ -129,6 +133,47 @@ report = SB.call("weather", city: "Porto Alegre")
 - Limits per execution: 1000 tool calls and 1 MiB per result. At most 64
   tools can be bound to one class.
 - A `RubyLLM::CodeMode` cannot be bound inside another `CodeMode`.
+
+### MCP servers
+
+The `mcp` DSL connects [RubyLLM::MCP](https://rubyllm.com/next/mcp/) servers
+and binds all their tools in one call, letting the sandboxed code reach the
+server through the host RPC channel:
+
+```ruby
+docs = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
+
+class DocsResearch < RubyLLM::CodeMode
+  mcp docs                       # instance
+  # mcp MicrosoftDocs            # or the class (instantiated with .new)
+  # mcp Linear, user: current_user  # class + the server's declared inputs
+end
+```
+
+Each server tool keeps its server name and its JSON schema is rendered into
+the tool description, so inside the sandbox the model writes:
+
+```ruby
+result = SB.call("microsoft_docs_search", query: "Azure Blob Storage")
+result[:text]       # => the tool's text output
+result[:structured] # => parsed structured content, or nil
+result[:error]      # => true when the tool reported a failure
+```
+
+- A tool whose name is already bound is re-bound as `<server>_tool`
+  (`search` on server `github` → `github_search`); a name that still collides
+  after prefixing raises at definition time.
+- Servers that send `instructions` have them listed in the description under
+  a "## Server notes" section.
+- Everything fails fast: an argument that is not a `RubyLLM::MCP`, a server
+  that cannot be reached, or a stuck name collision roll the whole call back
+  and raise at definition time.
+- The class form binds the tools of one instance built at definition time —
+  for servers that act per-user, pass a ready instance instead
+  (`mcp Linear.new(user: current_user)`) where the user is available.
+
+The sandbox itself never sees the network — every `SB.call` performs the MCP
+request on the host. A runnable example lives in `sample/ruby_llm_mcp/`.
 
 ### Sandbox limits
 
