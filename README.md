@@ -1,4 +1,4 @@
-# ruby_llm-code_mode
+# RubyLLM::CodeMode
 
 A [RubyLLM](https://rubyllm.com) tool that runs model-generated Ruby code inside a
 secure sandbox, powered by [SecurityBox](https://rubygems.org/gems/security_box).
