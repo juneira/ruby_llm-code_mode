@@ -14,7 +14,12 @@ Gem::Specification.new do |spec|
   spec.license = "MIT"
   spec.required_ruby_version = ">= 4.0.0"
 
+  spec.homepage = "https://github.com/juneira/ruby_llm-code_mode"
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
+  spec.metadata["homepage_uri"] = spec.homepage
+  spec.metadata["source_code_uri"] = "https://github.com/juneira/ruby_llm-code_mode"
+  spec.metadata["bug_tracker_uri"] = "https://github.com/juneira/ruby_llm-code_mode/issues"
+  spec.metadata["changelog_uri"] = "https://github.com/juneira/ruby_llm-code_mode/releases"
 
   spec.files = Dir.glob("lib/**/*") + Dir.glob(%w[LICENSE README.md])
   spec.require_paths = ["lib"]
