@@ -19,6 +19,10 @@ Gem::Specification.new do |spec|
   spec.metadata["source_code_uri"] = "https://github.com/juneira/ruby_llm-code_mode"
   spec.metadata["bug_tracker_uri"] = "https://github.com/juneira/ruby_llm-code_mode/issues"
   spec.metadata["changelog_uri"] = "https://github.com/juneira/ruby_llm-code_mode/releases"
+  spec.metadata["documentation_uri"] = "https://rubydoc.info/gems/ruby_llm-code_mode"
+
+  spec.extra_rdoc_files = %w[LICENSE README.md]
+  spec.rdoc_options = ["--main", "README.md"]
 
   spec.files = Dir.glob("lib/**/*") + Dir.glob(%w[LICENSE README.md])
   spec.require_paths = ["lib"]
