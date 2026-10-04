@@ -137,6 +137,25 @@ Do not commit without an explicit user request.
    return `RubyLLM::MCP::Result`; `call_bound_tool` normalizes it into
    `{text:, structured:, error:}` for the guest (guarded by
    `defined?(RubyLLM::MCP::Result)`, so the gem still works with RubyLLM 2.0).
+10. **Instance-level additions (v2.2)**: `add_tools`/`add_mcps` bind extra
+   host tools / MCP servers onto a specific CodeMode instance, on top of the
+   class-level ones. The registration core lives in the nested
+   `Registry` module, parameterized by the target collections — class
+   `tools`/`mcps` and the instance methods run the exact same validation and
+   all-or-nothing rollback (`target.replace(snapshot)` preserves object
+   identity). Instance additions live in `@instance_tools` (hash) and
+   `@instance_mcps` (array); uniqueness checks take a `reserved:` set (the
+   class bindings) so instance names cannot shadow class names, and the
+   64-tool limit counts both levels together. The instance `description`
+   renders `build_description(extra_tools:, extra_mcps:)`, so
+   `chat.with_tools(tool)` exposes the additions to the model (register the
+   tool with the chat after adding). Per-instance `configuration`: instances
+   without additions share `self.class.configuration`; with additions, a
+   private instance `configuration` memoizes `SecurityBox::Configuration.build`
+   with the class mounts and the class rpcs merged with
+   `Registry.rpc_handlers(instance_tools)`. Once the sandbox exists
+   (`@sandbox` set on first execute), both methods raise `ArgumentError`
+   ("cannot add tools or MCP servers after the first execution").
 
 ## Essential knowledge about the dependencies
 

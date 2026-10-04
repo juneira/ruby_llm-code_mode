@@ -58,6 +58,25 @@ RSpec.describe RubyLLM::CodeMode do
     expect(described_class.tool_name).to eq("code_mode")
   end
 
+  # Stands in for RubyLLM::MCP when the released gem (2.0) has none.
+  let(:mcp_base) do
+    Class.new do
+      attr_reader :name, :tools, :instructions
+
+      def initialize(name: "fake_server", tools: [], instructions: "")
+        @name = name
+        @tools = tools
+        @instructions = instructions
+      end
+    end
+  end
+
+  before { stub_const("RubyLLM::MCP", mcp_base) }
+
+  def fake_server(name: "docs", tools:, instructions: "")
+    Class.new(mcp_base).new(name: name, tools: tools, instructions: instructions)
+  end
+
   describe ".mount / .mount_rw" do
     it "registers a read-only mount with the expanded host path" do
       klass = Class.new(described_class)
@@ -242,25 +261,6 @@ RSpec.describe RubyLLM::CodeMode do
   end
 
   describe ".mcps" do
-    # Stands in for RubyLLM::MCP when the released gem (2.0) has none.
-    let(:mcp_base) do
-      Class.new do
-        attr_reader :name, :tools, :instructions
-
-        def initialize(name: "fake_server", tools: [], instructions: "")
-          @name = name
-          @tools = tools
-          @instructions = instructions
-        end
-      end
-    end
-
-    before { stub_const("RubyLLM::MCP", mcp_base) }
-
-    def fake_server(name: "docs", tools:, instructions: "")
-      Class.new(mcp_base).new(name: name, tools: tools, instructions: instructions)
-    end
-
     it "binds a server's tools under their own names" do
       klass = Class.new(described_class)
       klass.mcps(fake_server(tools: [
@@ -562,6 +562,178 @@ RSpec.describe RubyLLM::CodeMode do
 
       expect(klass.configuration.rpcs["docs_search"].call({}))
         .to eq(text: "Azure Blob docs", structured: { "results" => [] }, error: false)
+    end
+  end
+
+  describe "#add_tools" do
+    it "binds tool classes and instances on top of the class tools" do
+      klass = Class.new(described_class)
+      klass.tools(SpecTools::Adder)
+      code_mode = klass.new
+      echo = SpecTools::Echo.new
+      code_mode.add_tools(echo)
+
+      expect(code_mode.description).to include("- `adder` — Adds two integers")
+      expect(code_mode.description).to include("- `echo` — Echoes its message")
+      expect(code_mode.send(:instance_tools)["echo"].tool).to equal(echo)
+      expect(klass.tools.size).to eq(1)
+    end
+
+    it "accepts arrays, several items and explicit names" do
+      klass = Class.new(described_class)
+      code_mode = klass.new
+      code_mode.add_tools(SpecTools::Echo, [SpecTools::Adder], "extra" => SpecTools::Bare)
+
+      expect(code_mode.send(:instance_tools).keys).to eq(%w[echo adder extra])
+    end
+
+    it "keeps other instances of the same class unaffected" do
+      klass = Class.new(described_class)
+      first = klass.new
+      second = klass.new
+      first.add_tools(SpecTools::Adder)
+
+      expect(second.send(:instance_tools)).to be_empty
+      expect(second.description).not_to include("Adds two integers")
+    end
+
+    it "merges the added tools into the instance rpcs" do
+      klass = Class.new(described_class)
+      klass.tools(SpecTools::Adder)
+      code_mode = klass.new
+      code_mode.add_tools(SpecTools::Echo)
+
+      config = code_mode.send(:configuration)
+      expect(config.rpcs.keys).to eq(%w[adder echo])
+      expect(config.rpcs["echo"].call(message: "hi")).to eq(echoed: "hi")
+    end
+
+    it "shares the class configuration when nothing is added" do
+      klass = Class.new(described_class)
+      klass.mount(source: "data", dest: "/data", description: "d")
+
+      expect(klass.new.send(:configuration)).to equal(klass.configuration)
+    end
+
+    it "rejects a name already bound at class level" do
+      klass = Class.new(described_class)
+      klass.tools(SpecTools::Adder)
+      code_mode = klass.new
+
+      expect { code_mode.add_tools("adder" => SpecTools::Echo) }
+        .to raise_error(ArgumentError, /already bound/)
+      expect(code_mode.send(:instance_tools)).to be_empty
+    end
+
+    it "rolls back everything when one item is invalid" do
+      klass = Class.new(described_class)
+      code_mode = klass.new
+
+      expect { code_mode.add_tools(SpecTools::Adder, Object) }
+        .to raise_error(ArgumentError, /expected a RubyLLM::Tool/)
+      expect(code_mode.send(:instance_tools)).to be_empty
+    end
+
+    it "raises after the first execution" do
+      klass = Class.new(described_class)
+      code_mode = klass.new
+      sandbox = instance_double(SecurityBox::Sandbox)
+      allow(SecurityBox::Sandbox).to receive(:new).and_return(sandbox)
+      allow(sandbox).to receive(:eval).and_return(SecurityBox::Result.new(status: :ok, value: 1))
+
+      code_mode.execute(code: "1")
+
+      expect { code_mode.add_tools(SpecTools::Adder) }
+        .to raise_error(ArgumentError, /after the first execution/)
+    end
+  end
+
+  describe "#add_mcps" do
+    it "binds a server's tools on top of the class ones" do
+      klass = Class.new(described_class)
+      klass.tools(SpecTools::Adder)
+      code_mode = klass.new
+      code_mode.add_mcps(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]))
+
+      expect(code_mode.send(:instance_tools).keys).to eq(%w[docs_search])
+      expect(code_mode.send(:instance_mcps).map(&:name)).to eq(%w[docs])
+      expect(klass.tools.keys).to eq(%w[adder])
+      expect(klass.mcps).to be_empty
+    end
+
+    it "accepts several servers, arrays and explicit inputs" do
+      klass = Class.new(described_class)
+      code_mode = klass.new
+      server_class = Class.new(mcp_base)
+      allow(server_class).to receive(:new).with(user: "juneira").and_return(
+        fake_server(name: "issues", tools: [SpecTools::Remote.new(name: "issue_search")])
+      )
+
+      code_mode.add_mcps(
+        fake_server(name: "docs", tools: [SpecTools::Remote.new(name: "docs_search")]),
+        [fake_server(name: "github", tools: [SpecTools::Remote.new(name: "list_issues")])]
+      )
+      code_mode.add_mcps(server_class, user: "juneira")
+
+      expect(code_mode.send(:instance_mcps).map(&:name)).to eq(%w[docs github issues])
+      expect(code_mode.send(:instance_tools).keys)
+        .to eq(%w[docs_search list_issues issue_search])
+    end
+
+    it "auto-prefixes a name bound at class level" do
+      klass = Class.new(described_class)
+      klass.tools(SpecTools::Adder)
+      code_mode = klass.new
+      code_mode.add_mcps(fake_server(name: "github", tools: [
+        SpecTools::Remote.new(name: "adder"),
+        SpecTools::Remote.new(name: "list_issues")
+      ]))
+
+      expect(code_mode.send(:instance_tools).keys).to eq(%w[github_adder list_issues])
+    end
+
+    it "renders the added servers and tools in the instance description" do
+      klass = Class.new(described_class)
+      code_mode = klass.new
+      code_mode.add_mcps(fake_server(
+        name: "docs",
+        tools: [SpecTools::Remote.new(name: "docs_search", description: "Search the docs")],
+        instructions: "Search official Microsoft docs."
+      ))
+      description = code_mode.description
+
+      expect(description).to include("- `docs_search` — Search the docs")
+      expect(description).to include("## Server notes")
+      expect(description).to include("- **docs** — Search official Microsoft docs.")
+      expect(klass.description).not_to include("docs_search")
+    end
+
+    it "rolls back both collections when a server cannot be reached" do
+      klass = Class.new(described_class)
+      code_mode = klass.new
+      broken = fake_server(tools: [])
+      def broken.tools
+        raise "connection failed"
+      end
+
+      expect do
+        code_mode.add_mcps(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]), broken)
+      end.to raise_error(RuntimeError, /connection failed/)
+      expect(code_mode.send(:instance_tools)).to be_empty
+      expect(code_mode.send(:instance_mcps)).to be_empty
+    end
+
+    it "raises after the first execution" do
+      klass = Class.new(described_class)
+      code_mode = klass.new
+      sandbox = instance_double(SecurityBox::Sandbox)
+      allow(SecurityBox::Sandbox).to receive(:new).and_return(sandbox)
+      allow(sandbox).to receive(:eval).and_return(SecurityBox::Result.new(status: :ok, value: 1))
+
+      code_mode.execute(code: "1")
+
+      expect { code_mode.add_mcps(fake_server(tools: [])) }
+        .to raise_error(ArgumentError, /after the first execution/)
     end
   end
 

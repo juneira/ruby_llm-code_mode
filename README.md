@@ -199,6 +199,36 @@ result[:error]      # => true when the tool reported a failure
 The sandbox itself never sees the network — every `SB.call` performs the MCP
 request on the host. A runnable example lives in `sample/ruby_llm_mcp/`.
 
+### Per-instance tools and servers
+
+Class-level `tools`/`mcps` bind once for every instance of the class. When the
+same tool class needs a different toolset per chat — per-user credentials, a
+server list composed at runtime — bind additions on the instance instead:
+
+```ruby
+tool = Analytics.new
+tool.add_tools(UserSearch.new(user: current_user))   # ready instance (classes work too)
+tool.add_mcps(user_linear)                           # server instance, class or array
+
+chat = RubyLLM.chat
+chat.with_tools(tool)   # the description already includes the additions
+chat.ask "Search the docs and log the findings"
+tool.execute(code: 'SB.call("user_search", q: "...")')
+```
+
+- `add_tools` accepts the same forms as `tools`: classes, ready instances,
+  several at once, arrays and `"name" => tool` pairs. Names may not collide
+  with the class-level bindings or each other, and the 64-tool limit counts
+  both levels together.
+- `add_mcps` accepts the same forms as `mcps`; the servers' tools bind into
+  this instance only — other instances and the class itself are unaffected.
+- Both are all-or-nothing: on any failure nothing is bound.
+- The instance description includes the additions, so register the tool with
+  the chat after calling them.
+- The sandbox is configured on the first execution: after that,
+  `add_tools`/`add_mcps` raise — create a new instance instead. Instances
+  without additions share the class configuration.
+
 ### Sandbox limits
 
 Defaults: `timeout_ms: 30_000` (wall clock), `fuel_ms: 10_000` (CPU budget).

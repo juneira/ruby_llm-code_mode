@@ -23,6 +23,16 @@ module SandboxTools
       raise KeyError, "boom"
     end
   end
+
+  class Doubler < RubyLLM::Tool
+    description "Doubles an integer"
+
+    parameter :n, type: "integer", description: "Number to double"
+
+    def execute(n:)
+      { doubled: n * 2 }
+    end
+  end
 end
 
 RSpec.describe RubyLLM::CodeMode, "integration (bound tools)" do
@@ -34,6 +44,15 @@ RSpec.describe RubyLLM::CodeMode, "integration (bound tools)" do
   end
 
   let(:tool) { tool_class.new }
+
+  it "calls tools added on the instance through SB.call" do
+    instance_tool = tool_class.new
+    instance_tool.add_tools("doubler" => SandboxTools::Doubler)
+
+    result = instance_tool.execute(code: 'SB.call("doubler", n: 21)')
+
+    expect(result).to eq(status: "ok", value: { "doubled" => 42 })
+  end
 
   it "returns the bound tool result through SB.call" do
     result = tool.execute(code: 'SB.call("adder", a: 1, b: 2)')
