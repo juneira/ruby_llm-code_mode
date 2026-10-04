@@ -5,7 +5,7 @@ require "security_box"
 
 module RubyLLM
   class CodeMode < Tool
-    VERSION = "0.3.0"
+    VERSION = "0.4.0"
 
     DEFAULT_TIMEOUT_MS = 30_000
     DEFAULT_FUEL_MS = 10_000
