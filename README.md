@@ -22,21 +22,41 @@ gem "ruby_llm-code_mode"
 
 ## Usage
 
-Define a tool class, declare the host folders the sandbox may see, and give it to
-your chat:
+Define a tool class, declare the host folders the sandbox may see, bind the
+host tools and MCP servers the code may call, and give it to your chat:
 
 ```ruby
 require "ruby_llm"
 require "ruby_llm/code_mode"
 
+# A host tool the sandboxed code can call with SB.call("notes", note: "...").
+class Notes < RubyLLM::Tool
+  description "Records a finding in the analysis log"
+
+  parameter :note, type: "string", description: "The finding to record"
+
+  def execute(note:)
+    # host-side write: log file, HTTP call, database query, ...
+    { recorded: note }
+  end
+end
+
+# An MCP server whose tools become callable from inside the sandbox too.
+docs = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
+
 class Analytics < RubyLLM::CodeMode
   mount    source: "data/input", dest: "/data",      description: "CSV files with the raw data (read only)"
   mount_rw source: "workspace",  dest: "/workspace", description: "Write generated reports and artifacts here"
+
+  tools Notes                   # one, several (`tools A, B`) or arrays (`tools [A, B]`)
+  mcps   docs                   # one, several (`mcps A, B`) or arrays — classes work too
 end
 
 chat = RubyLLM.chat
 chat.with_tools(Analytics)
-chat.ask "Compute the total sales per month from the CSVs in /data and save the report to /workspace/report.md"
+chat.ask "Compute the total sales per month from the CSVs in /data, save the " \
+         "report to /workspace/report.md, record the biggest finding in the " \
+         "notes log and check the Azure docs for the storage API you used"
 ```
 
 ### What the model sees
