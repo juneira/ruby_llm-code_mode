@@ -28,8 +28,8 @@ end
 RSpec.describe RubyLLM::CodeMode, "integration (bound tools)" do
   let(:tool_class) do
     Class.new(described_class).tap do |klass|
-      klass.tool(SandboxTools::Adder)
-      klass.tool("failer" => SandboxTools::Failer)
+      klass.tools(SandboxTools::Adder)
+      klass.tools("failer" => SandboxTools::Failer)
     end
   end
 

@@ -50,7 +50,7 @@ a fixed description built from the declared mounts:
 - a **Read-only folders** section listing each `mount` as `` `/guest/path` — description``;
 - a **Read-write folders** section listing each `mount_rw`;
 - a **Host tools** section listing every bound `RubyLLM::Tool` with its
-  parameters, when any are bound with `tool` or `mcp`.
+  parameters, when any are bound with `tools` or `mcps`.
 
 The single parameter is `code` — a complete, self-contained Ruby script.
 
@@ -70,9 +70,10 @@ A JSON object sent back to the model:
 ```ruby
 mount    source: host_path, dest: guest_path, description: "..."  # read-only
 mount_rw source: host_path, dest: guest_path, description: "..." # read-write
-tool     SomeRubyLLMTool                                          # host tool
-tool     "name" => SomeRubyLLMTool                                # explicit name
-mcp      SomeMcpServer                                            # MCP server (instance or class)
+tools    SomeRubyLLMTool                                          # host tool
+tools    SomeTool, OtherTool                                      # several (or arrays)
+tools    "name" => SomeRubyLLMTool                                # explicit name(s)
+mcps     SomeMcpServer                                            # MCP server(s) (instance or class)
 ```
 
 - `source:` — folder on the host machine, relative to the process working
@@ -80,12 +81,15 @@ mcp      SomeMcpServer                                            # MCP server (
 - `dest:` — absolute, normalized path inside the sandbox (may not overlap
   the reserved `/work`, `/usr` or `/src` trees, and must be unique).
 - `description:` — shown to the model in the tool description.
-- `tool` — a `RubyLLM::Tool` class or instance; the name inside the sandbox
-  is derived from the class-name leaf (`MyApp::Tools::Weather` → `weather`),
-  or the explicit one from the one-pair form.
-- `mcp` — a `RubyLLM::MCP` instance or class (auto-instantiated, with the
-  server's declared inputs as keywords); all of the server's tools are bound
-  under their own names.
+- `tools` — one or more `RubyLLM::Tool` classes/instances (or arrays of
+  them); the name inside the sandbox is derived from the class-name leaf
+  (`MyApp::Tools::Weather` → `weather`), or the explicit one from the
+  `"name" => tool` pairs. Called without arguments, it returns the bound
+  tools.
+- `mcps` — one or more `RubyLLM::MCP` instances or classes
+  (auto-instantiated, with the server's declared inputs as keywords); all of
+  each server's tools are bound under their own names. Called without
+  arguments, it returns the connected servers.
 
 Invalid declarations raise at class-definition time, so a misconfigured tool
 never reaches a live chat. Subclasses inherit their parent's mounts and tools.
@@ -107,8 +111,8 @@ end
 
 class Assistant < RubyLLM::CodeMode
   mount source: "data", dest: "/data", description: "Project data"
-  tool  Weather                 # binds as `weather`
-  tool  "forecast" => Weather   # or bind it under an explicit name
+  tools Weather                    # binds as `weather`
+  tools "forecast" => Weather      # or bind it under an explicit name
 end
 ```
 
@@ -136,7 +140,7 @@ report = SB.call("weather", city: "Porto Alegre")
 
 ### MCP servers
 
-The `mcp` DSL connects [RubyLLM::MCP](https://rubyllm.com/next/mcp/) servers
+The `mcps` DSL connects [RubyLLM::MCP](https://rubyllm.com/next/mcp/) servers
 and binds all their tools in one call, letting the sandboxed code reach the
 server through the host RPC channel:
 
@@ -144,9 +148,9 @@ server through the host RPC channel:
 docs = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
 
 class DocsResearch < RubyLLM::CodeMode
-  mcp docs                       # instance
-  # mcp MicrosoftDocs            # or the class (instantiated with .new)
-  # mcp Linear, user: current_user  # class + the server's declared inputs
+  mcps docs                       # instance
+  # mcps MicrosoftDocs            # or the class (instantiated with .new)
+  # mcps Linear, user: current_user  # class + the server's declared inputs
 end
 ```
 
@@ -170,7 +174,7 @@ result[:error]      # => true when the tool reported a failure
   and raise at definition time.
 - The class form binds the tools of one instance built at definition time —
   for servers that act per-user, pass a ready instance instead
-  (`mcp Linear.new(user: current_user)`) where the user is available.
+  (`mcps Linear.new(user: current_user)`) where the user is available.
 
 The sandbox itself never sees the network — every `SB.call` performs the MCP
 request on the host. A runnable example lives in `sample/ruby_llm_mcp/`.

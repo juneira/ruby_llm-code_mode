@@ -29,7 +29,7 @@ class CsvReader < RubyLLM::CodeMode
            dest: "/workspace",
            description: "Write generated reports and artifacts here"
 
-  tool SalesNotes
+  tools SalesNotes
 end
 
 RubyLLM.configure do |config|

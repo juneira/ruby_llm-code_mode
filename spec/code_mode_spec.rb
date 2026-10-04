@@ -124,10 +124,10 @@ RSpec.describe RubyLLM::CodeMode do
     end
   end
 
-  describe ".tool" do
+  describe ".tools" do
     it "registers a tool class and derives the name from tool_name" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Adder)
+      klass.tools(SpecTools::Adder)
 
       entry = klass.tools["adder"]
       expect(entry).to be_a(described_class::ToolEntry)
@@ -138,84 +138,110 @@ RSpec.describe RubyLLM::CodeMode do
     it "registers a tool instance as-is" do
       klass = Class.new(described_class)
       instance = SpecTools::Echo.new
-      klass.tool(instance)
+      klass.tools(instance)
 
       expect(klass.tools["echo"].tool).to equal(instance)
     end
 
     it "accepts an explicit name via a one-pair hash" do
       klass = Class.new(described_class)
-      klass.tool("sum" => SpecTools::Adder)
+      klass.tools("sum" => SpecTools::Adder)
 
       expect(klass.tools["sum"].tool).to be_an_instance_of(SpecTools::Adder)
     end
 
     it "accepts an explicit name via kwargs" do
       klass = Class.new(described_class)
-      klass.tool(sum: SpecTools::Adder)
+      klass.tools(sum: SpecTools::Adder)
 
       expect(klass.tools.key?("sum")).to be(true)
+    end
+
+    it "accepts several tools as varargs or arrays" do
+      klass = Class.new(described_class)
+      klass.tools(SpecTools::Adder, [SpecTools::Echo])
+
+      expect(klass.tools.keys).to eq(%w[adder echo])
+    end
+
+    it "accepts several explicit names via a hash or kwargs" do
+      klass = Class.new(described_class)
+      klass.tools("sum" => SpecTools::Adder, greet: SpecTools::Echo)
+
+      expect(klass.tools.keys).to eq(%w[sum greet])
+    end
+
+    it "returns the bound tools when called without arguments" do
+      klass = Class.new(described_class)
+      expect(klass.tools).to eq({})
+
+      klass.tools(SpecTools::Adder)
+      expect(klass.tools.keys).to eq(%w[adder])
     end
 
     it "rejects anything that is not a RubyLLM::Tool class or instance" do
       klass = Class.new(described_class)
 
-      expect { klass.tool(Object) }
+      expect { klass.tools(Object) }
         .to raise_error(ArgumentError, /expected a RubyLLM::Tool/)
-      expect { klass.tool("x" => "not a tool") }
+      expect { klass.tools("x" => "not a tool") }
         .to raise_error(ArgumentError, /expected a RubyLLM::Tool/)
-      expect { klass.tool }
+      expect(klass.tools).to be_empty
+    end
+
+    it "rolls back everything when one of several tools is invalid" do
+      klass = Class.new(described_class)
+
+      expect { klass.tools(SpecTools::Adder, Object) }
         .to raise_error(ArgumentError, /expected a RubyLLM::Tool/)
-      expect { klass.tool("a" => SpecTools::Adder, "b" => SpecTools::Echo) }
-        .to raise_error(ArgumentError, /exactly one/)
       expect(klass.tools).to be_empty
     end
 
     it "rejects an empty derived name (anonymous tool class)" do
       klass = Class.new(described_class)
 
-      expect { klass.tool(Class.new(RubyLLM::Tool)) }
+      expect { klass.tools(Class.new(RubyLLM::Tool)) }
         .to raise_error(ArgumentError, /non-empty/)
       expect(klass.tools).to be_empty
     end
 
     it "rejects duplicate names at definition time" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Adder)
+      klass.tools(SpecTools::Adder)
 
-      expect { klass.tool("adder" => SpecTools::Echo) }
+      expect { klass.tools("adder" => SpecTools::Echo) }
         .to raise_error(ArgumentError, /already bound/)
       expect(klass.tools.size).to eq(1)
     end
 
     it "rejects more than 64 tools at definition time" do
       klass = Class.new(described_class)
-      64.times { |i| klass.tool("t#{i}" => SpecTools::Adder) }
+      64.times { |i| klass.tools("t#{i}" => SpecTools::Adder) }
 
-      expect { klass.tool("t65" => SpecTools::Adder) }
+      expect { klass.tools("t65" => SpecTools::Adder) }
         .to raise_error(ArgumentError, /limit is 64/)
     end
 
     it "rejects binding a CodeMode inside another CodeMode" do
       klass = Class.new(described_class)
 
-      expect { klass.tool(Class.new(described_class)) }
+      expect { klass.tools(Class.new(described_class)) }
         .to raise_error(ArgumentError, /CodeMode/)
       expect(klass.tools).to be_empty
     end
 
     it "inherits parent tools into subclasses without sharing the hash" do
       parent = Class.new(described_class)
-      parent.tool(SpecTools::Adder)
+      parent.tools(SpecTools::Adder)
       child = Class.new(parent)
-      child.tool(SpecTools::Echo)
+      child.tools(SpecTools::Echo)
 
       expect(child.tools.keys).to eq(%w[adder echo])
       expect(parent.tools.size).to eq(1)
     end
   end
 
-  describe ".mcp" do
+  describe ".mcps" do
     # Stands in for RubyLLM::MCP when the released gem (2.0) has none.
     let(:mcp_base) do
       Class.new do
@@ -237,7 +263,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "binds a server's tools under their own names" do
       klass = Class.new(described_class)
-      klass.mcp(fake_server(tools: [
+      klass.mcps(fake_server(tools: [
         SpecTools::Remote.new(name: "microsoft_docs_search"),
         SpecTools::Remote.new(name: "microsoft_docs_fetch")
       ]))
@@ -248,7 +274,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "accepts several servers, varargs and arrays" do
       klass = Class.new(described_class)
-      klass.mcp(
+      klass.mcps(
         fake_server(name: "docs", tools: [SpecTools::Remote.new(name: "docs_search")]),
         [fake_server(name: "github", tools: [SpecTools::Remote.new(name: "list_issues")])]
       )
@@ -260,7 +286,7 @@ RSpec.describe RubyLLM::CodeMode do
     it "instantiates a class argument" do
       klass = Class.new(described_class)
       server_class = Class.new(mcp_base)
-      klass.mcp(server_class)
+      klass.mcps(server_class)
 
       expect(klass.mcps.first.mcp).to be_an_instance_of(server_class)
       expect(klass.tools).to be_empty
@@ -272,7 +298,7 @@ RSpec.describe RubyLLM::CodeMode do
       instance = fake_server(tools: [SpecTools::Remote.new(name: "list_issues")])
       allow(server_class).to receive(:new).with(user: "juneira").and_return(instance)
 
-      klass.mcp(server_class, user: "juneira")
+      klass.mcps(server_class, user: "juneira")
 
       expect(klass.tools.keys).to eq(%w[list_issues])
     end
@@ -280,7 +306,7 @@ RSpec.describe RubyLLM::CodeMode do
     it "rejects inputs when passing ready instances" do
       klass = Class.new(described_class)
 
-      expect { klass.mcp(fake_server(tools: []), user: "juneira") }
+      expect { klass.mcps(fake_server(tools: []), user: "juneira") }
         .to raise_error(ArgumentError, /inputs only apply/)
       expect(klass.mcps).to be_empty
     end
@@ -288,21 +314,29 @@ RSpec.describe RubyLLM::CodeMode do
     it "rejects anything that is not a RubyLLM::MCP" do
       klass = Class.new(described_class)
 
-      expect { klass.mcp(Object.new) }
+      expect { klass.mcps(Object.new) }
         .to raise_error(ArgumentError, /expected a RubyLLM::MCP/)
-      expect { klass.mcp(Object) }
+      expect { klass.mcps(Object) }
         .to raise_error(ArgumentError, /expected a RubyLLM::MCP/)
-      expect { klass.mcp }
-        .to raise_error(ArgumentError, /at least one/)
+      expect { klass.mcps(fake_server(tools: []), Object) }
+        .to raise_error(ArgumentError, /expected a RubyLLM::MCP/)
       expect(klass.tools).to be_empty
       expect(klass.mcps).to be_empty
     end
 
+    it "returns the connected servers when called without arguments" do
+      klass = Class.new(described_class)
+      expect(klass.mcps).to eq([])
+
+      klass.mcps(fake_server(tools: []))
+      expect(klass.mcps.map(&:name)).to eq(%w[docs])
+    end
+
     it "auto-prefixes a colliding tool name with the server name" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Adder) # binds as "adder"
+      klass.tools(SpecTools::Adder) # binds as "adder"
 
-      klass.mcp(fake_server(name: "github", tools: [
+      klass.mcps(fake_server(name: "github", tools: [
         SpecTools::Remote.new(name: "adder"),
         SpecTools::Remote.new(name: "list_issues")
       ]))
@@ -314,7 +348,7 @@ RSpec.describe RubyLLM::CodeMode do
       klass = Class.new(described_class)
 
       expect do
-        klass.mcp(
+        klass.mcps(
           fake_server(name: "gitlab", tools: [SpecTools::Remote.new(name: "search")]),
           fake_server(name: "gitlab", tools: [SpecTools::Remote.new(name: "search")]),
           fake_server(name: "gitlab", tools: [SpecTools::Remote.new(name: "search")])
@@ -331,7 +365,7 @@ RSpec.describe RubyLLM::CodeMode do
         raise "connection failed"
       end
 
-      expect { klass.mcp(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]), broken) }
+      expect { klass.mcps(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]), broken) }
         .to raise_error(RuntimeError, /connection failed/)
       expect(klass.tools).to be_empty
       expect(klass.mcps).to be_empty
@@ -339,7 +373,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "inherits parent mcps into subclasses" do
       parent = Class.new(described_class)
-      parent.mcp(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]))
+      parent.mcps(fake_server(tools: [SpecTools::Remote.new(name: "docs_search")]))
       child = Class.new(parent)
 
       expect(child.mcps.map(&:name)).to eq(%w[docs])
@@ -349,7 +383,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "lists the tools' descriptions and schemas in the description" do
       klass = Class.new(described_class)
-      klass.mcp(fake_server(tools: [SpecTools::Remote.new(
+      klass.mcps(fake_server(tools: [SpecTools::Remote.new(
         name: "docs_search",
         description: "Search Microsoft documentation",
         parameters_schema: {
@@ -365,7 +399,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "lists the servers' instructions under a Server notes section" do
       klass = Class.new(described_class)
-      klass.mcp(
+      klass.mcps(
         fake_server(name: "docs", tools: [SpecTools::Remote.new(name: "docs_search")],
                     instructions: "Search official Microsoft docs."),
         fake_server(name: "quiet", tools: [])
@@ -380,7 +414,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "omits the Server notes section when no server sends instructions" do
       klass = Class.new(described_class)
-      klass.mcp(fake_server(tools: []))
+      klass.mcps(fake_server(tools: []))
       expect(klass.description).not_to include("Server notes")
     end
   end
@@ -421,8 +455,8 @@ RSpec.describe RubyLLM::CodeMode do
     it "lists bound tools with their parameters after the folder sections" do
       klass = Class.new(described_class)
       klass.mount(source: "data", dest: "/data", description: "d")
-      klass.tool(SpecTools::Adder)
-      klass.tool(SpecTools::Echo)
+      klass.tools(SpecTools::Adder)
+      klass.tools(SpecTools::Echo)
       description = klass.description
 
       expect(description).to include("## Host tools (call with SB.call)")
@@ -436,7 +470,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "lists a tool without description or parameters as a bare line" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Bare)
+      klass.tools(SpecTools::Bare)
       expect(klass.description).to end_with("- `bare`")
     end
 
@@ -475,8 +509,8 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "passes the bound tools as host rpc handlers" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Adder)
-      klass.tool(SpecTools::Echo)
+      klass.tools(SpecTools::Adder)
+      klass.tools(SpecTools::Echo)
       config = klass.configuration
 
       expect(config.rpcs.keys).to eq(%w[adder echo])
@@ -485,7 +519,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "gives handlers string-keyed args that reach execute with symbol keys" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Adder)
+      klass.tools(SpecTools::Adder)
 
       result = klass.configuration.rpcs["adder"].call({ "a" => 1, "b" => 2 })
       expect(result).to eq(sum: 3)
@@ -493,7 +527,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "reports schema mistakes through RubyLLM's error convention" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Adder)
+      klass.tools(SpecTools::Adder)
 
       result = klass.configuration.rpcs["adder"].call({ "a" => 1 })
       expect(result).to eq(error: "Invalid tool arguments: missing keyword: b")
@@ -501,7 +535,7 @@ RSpec.describe RubyLLM::CodeMode do
 
     it "rejects non-hash arguments with a clear message" do
       klass = Class.new(described_class)
-      klass.tool(SpecTools::Adder)
+      klass.tools(SpecTools::Adder)
 
       expect { klass.configuration.rpcs["adder"].call([1, 2]) }
         .to raise_error(ArgumentError, /expects a hash of arguments, got Array/)
@@ -524,7 +558,7 @@ RSpec.describe RubyLLM::CodeMode do
       allow(remote).to receive(:call).and_return(result_class.new)
 
       klass = Class.new(described_class)
-      klass.tool(remote)
+      klass.tools(remote)
 
       expect(klass.configuration.rpcs["docs_search"].call({}))
         .to eq(text: "Azure Blob docs", structured: { "results" => [] }, error: false)

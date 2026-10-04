@@ -11,8 +11,8 @@ module RubyLLM
     DEFAULT_FUEL_MS = 10_000
     MAX_TOOLS = SecurityBox::Rpcs::MAX_RPCS
 
-    TOOL_USAGE = "tool expects a RubyLLM::Tool class or instance, " \
-                 'or exactly one "name" => tool pair'
+    TOOL_USAGE = "tools expects RubyLLM::Tool classes or instances, " \
+                 'or "name" => tool pairs'
 
     FIXED_DESCRIPTION = <<~DESC.freeze
       Executes Ruby code inside a secure sandbox and returns what it produced.
@@ -69,22 +69,38 @@ module RubyLLM
         add_mount(source, dest, :read_write, description)
       end
 
-      def tool(mapping = nil, **kwargs)
-        if !kwargs.empty?
-          raise ArgumentError, TOOL_USAGE unless kwargs.size == 1 && mapping.nil?
+      # Binds RubyLLM::Tool classes/instances as host tools callable from
+      # inside the sandbox via SB.call:
+      #
+      #   tools Weather                     # class (instantiated with .new)
+      #   tools Weather, Echo               # several at once
+      #   tools [Weather, Echo]             # or arrays
+      #   tools "forecast" => Weather       # explicit sandbox name
+      #   tools forecast: Weather           # same, as kwargs
+      #
+      # Without arguments it returns the hash of bound tools. The name is
+      # derived from the class-name leaf (`MyApp::Tools::Weather` binds as
+      # `weather`). Fails fast: every item must be a RubyLLM::Tool (class or
+      # instance), names must be unique and non-empty, and if anything goes
+      # wrong nothing is bound.
+      def tools(*args, **kwargs)
+        return @tools ||= {} if args.empty? && kwargs.empty?
 
-          name, bound = kwargs.first
-          mapping = { name.to_s => bound }
+        snapshot = @tools.dup
+        begin
+          args.flatten(1).each do |item|
+            if item.is_a?(Hash)
+              item.each { |name, bound| add_tool(bound, name.to_s) }
+            else
+              add_tool(item, nil)
+            end
+          end
+          kwargs.each { |name, bound| add_tool(bound, name.to_s) }
+        rescue StandardError
+          instance_variable_set(:@tools, snapshot)
+          raise
         end
-
-        if mapping.is_a?(Hash)
-          raise ArgumentError, TOOL_USAGE unless mapping.size == 1
-
-          name, bound = mapping.first
-          add_tool(bound, name.to_s)
-        else
-          add_tool(mapping, nil)
-        end
+        tools
       end
 
       # Connects MCP server(s) and binds all their tools into the sandbox:
@@ -92,21 +108,24 @@ module RubyLLM
       #   docs = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
       #
       #   class DocsResearch < RubyLLM::CodeMode
-      #     mcp docs                    # instance
-      #     mcp MicrosoftDocs           # or the class (instantiated with .new)
-      #     mcp Linear, user: current_user  # class + declared inputs
-      #     mcp Docs, Github            # several servers / arrays at once
+      #     mcps docs                    # instance
+      #     mcps MicrosoftDocs           # or the class (instantiated with .new)
+      #     mcps Linear, user: current_user  # class + declared inputs
+      #     mcps Docs, Github            # several servers / arrays at once
       #   end
       #
-      # Server tools keep their names (`microsoft_docs_search`, ...); a tool
-      # whose name is already bound is re-bound as "<server>_tool". The
-      # servers' instructions (when the server sends them) are snapshotted
-      # at definition and listed in the description under "## Server notes".
+      # Without arguments it returns the array of connected servers. Server
+      # tools keep their names (`microsoft_docs_search`, ...); a tool whose
+      # name is already bound is re-bound as "<server>_tool". The servers'
+      # instructions (when the server sends them) are snapshotted at
+      # definition and listed in the description under "## Server notes".
       # Fails fast: every argument must be a RubyLLM::MCP (class or
       # instance), and if anything goes wrong — a server that cannot be
       # reached, a name that stays colliding after prefixing — nothing is
       # bound.
-      def mcp(*servers, **inputs)
+      def mcps(*servers, **inputs)
+        return @mcps ||= [] if servers.empty? && inputs.empty?
+
         flat = servers.flatten(1)
         raise ArgumentError, "expected at least one RubyLLM::MCP server" if flat.empty?
         unless inputs.empty? || flat.all?(Class)
@@ -125,14 +144,6 @@ module RubyLLM
 
       def mounts
         @mounts ||= []
-      end
-
-      def tools
-        @tools ||= {}
-      end
-
-      def mcps
-        @mcps ||= []
       end
 
       def configuration
@@ -263,7 +274,7 @@ module RubyLLM
       def normalize_mcp_servers(servers, inputs)
         unless defined?(RubyLLM::MCP)
           raise ArgumentError,
-                "RubyLLM::MCP is not available; mcp needs a ruby_llm version with MCP support"
+                "RubyLLM::MCP is not available; mcps needs a ruby_llm version with MCP support"
         end
 
         servers.map do |server|

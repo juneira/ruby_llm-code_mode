@@ -8,7 +8,7 @@ require_relative "../../lib/ruby_llm/code_mode"
 MCP_DOCS = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
 
 class DocsResearch < RubyLLM::CodeMode
-  mcp MCP_DOCS
+  mcps MCP_DOCS
 end
 
 puts "Bound tools: #{DocsResearch.tools.keys.join(', ')}"

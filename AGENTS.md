@@ -89,8 +89,9 @@ Do not commit without an explicit user request.
    `@mounts` and `@tools` — entries/instances are shared — and clears the
    memoized `@configuration`).
 7. **Sandbox reused per tool instance** (`@sandbox ||= Sandbox.new(configuration)`).
-8. **Bound tools (v2)**: `tool(ToolClass)`, `tool(instance)` or
-   `tool("name" => Tool)` registers a `RubyLLM::Tool` (fail-fast
+8. **Bound tools (v2)**: `tools(ToolClass)`, `tools(instance)`, `tools(t1,
+   t2, ...)`, `tools([t1, t2])`, `tools("name" => Tool)` (one or several
+   pairs; kwargs work too) registers `RubyLLM::Tool`s (fail-fast
    `ArgumentError` at definition: must be a Tool, non-empty name, unique
    name, max `SecurityBox::Rpcs::MAX_RPCS` = 64, never a `CodeMode`
    descendant). The name is derived from the class-name **leaf**
@@ -102,16 +103,22 @@ Do not commit without an explicit user request.
    back as RubyLLM's `{ error: "Invalid tool arguments: ..." }` hash); any
    exception propagates → guest sees `SB::ToolError` (class + message only).
    Non-Hash args raise `ArgumentError` ("expects a hash of arguments").
+   Multi-item `tools` calls are all-or-nothing: on any failure the whole
+   `@tools` snapshot is restored before re-raising. Called without
+   arguments, `tools` returns the bound-tools hash (polymorphic
+   reader/DSL).
    Handlers go into `configuration` (`rpcs:`) — excluded from the
    fingerprint by security_box. The description gains a
    "## Host tools (call with SB.call)" section (intro + name/description +
    `- \`param\` (type, required|optional) — desc` lines) only when tools
    exist; the RPC transcript (`Result#rpcs`) is deliberately NOT forwarded
    to the model.
-9. **`mcp` (v2.1)**: `mcp(server)`, `mcp(ServerClass)`, `mcp(ServerClass,
-   user: ...)`, `mcp(s1, s2, ...)` or arrays — connects
+9. **`mcps` (v2.1)**: `mcps(server)`, `mcps(ServerClass)`, `mcps(ServerClass,
+   user: ...)`, `mcps(s1, s2, ...)` or arrays — connects
    [RubyLLM::MCP](https://rubyllm.com/next/mcp/) server(s) at definition and
-   binds all their tools. Validation is fail-fast: every argument must be a
+   binds all their tools. Called without arguments, `mcps` returns the
+   connected-servers array (polymorphic reader/DSL). Validation is fail-fast:
+   every argument must be a
    `RubyLLM::MCP` instance or subclass (classes are auto-instantiated with
    the keyword inputs; inputs with ready instances raise), and
    `RubyLLM::MCP` being undefined (released RubyLLM 2.0) raises a clear
@@ -200,6 +207,6 @@ analyzes the CSV in the sandbox, writes `report.md` to the host and records a
 finding through the bound tool. Use it as the template for new samples and for
 testing changes to the gem. For MCP integration, `sample/ruby_llm_mcp/` is the
 reference: it connects the server built by
-`RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")` with `mcp` and runs
+`RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")` with `mcps` and runs
 against the live server (`dry_run.rb` verifies the wiring without spending
 LLM tokens).

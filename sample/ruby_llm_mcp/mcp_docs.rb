@@ -10,7 +10,7 @@ MCP_DOCS = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
 class DocsResearch < RubyLLM::CodeMode
   # Bind the server; every tool it offers is callable from inside the
   # sandbox by its server name, e.g. SB.call('microsoft_docs_search', query: '...').
-  mcp MCP_DOCS
+  mcps MCP_DOCS
 end
 
 RubyLLM.configure do |config|
