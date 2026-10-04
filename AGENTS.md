@@ -18,7 +18,22 @@ host `RubyLLM::Tool`s bound for the guest to call via `SB.call`.
 ## Structure
 
 ```
-lib/ruby_llm/code_mode.rb      EVERYTHING of the gem (class + DSL + Mount/ToolEntry Structs + version)
+lib/ruby_llm/code_mode.rb              entrypoint: class declaration (< Tool), VERSION,
+                                       shared constants (limits, TOOL_USAGE) and the
+                                       Mount/ToolEntry/McpEntry Structs; then requires
+                                       the four parts below, in order
+lib/ruby_llm/code_mode/description.rb  FIXED_DESCRIPTION + HOST_TOOLS_INTRO texts,
+                                       build_description/description + folder_section
+lib/ruby_llm/code_mode/registry.rb     Registry module: shared registration core and
+                                       description sections, parameterized by the target
+                                       collections (used by both the class DSL and the
+                                       instance API)
+lib/ruby_llm/code_mode/dsl.rb          class-level DSL: tool_name, mount/mount_rw,
+                                       tools/mcps, mounts, configuration, warmup,
+                                       inherited, add_mount
+lib/ruby_llm/code_mode/instance_methods.rb  parameter :code, add_tools/add_mcps,
+                                       instance description, execute and the private
+                                       sandbox/configuration helpers
 spec/code_mode_spec.rb         unit specs (DSL, description, configuration, rpc handlers, format_result)
 spec/integration_spec.rb       integration specs (real sandbox, real wasm)
 spec/spec_helper.rb
@@ -28,12 +43,15 @@ sample/ruby_llm_mcp/           functional example binding RubyLLM::MCP server to
 ruby_llm-code_mode.gemspec     deps: ruby_llm >= 2.0, security_box >= 0.6
 ```
 
-**Important:** `version.rb` and `mount.rb` were deliberately consolidated into
-`lib/ruby_llm/code_mode.rb`. Separate files that declare
-`module RubyLLM; class CodeMode` without a superclass break the load
-(`superclass mismatch` when `code_mode.rb` redefines `class CodeMode < Tool`).
-If you create sub-files, they must only reopen the class (no `superclass`) or
-be required **after** the class definition.
+**Important:** `class CodeMode < Tool` (with the superclass) is declared exactly
+once, in the entrypoint `lib/ruby_llm/code_mode.rb`. Every sub-file only
+**reopens** the class (`class CodeMode`, no superclass) — separate files that
+declare `module RubyLLM; class CodeMode` without a superclass *before* the
+entrypoint breaks the load (`superclass mismatch`). `VERSION` must stay in the
+entrypoint: the gemspec and `rake version:bump` both regex-parse it from
+`lib/ruby_llm/code_mode.rb`. New sub-files are picked up automatically by the
+gemspec (`Dir.glob("lib/**/*")`) but must be `require_relative`d from the
+entrypoint.
 
 ## Commands
 
