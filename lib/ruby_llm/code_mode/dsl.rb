@@ -3,6 +3,11 @@
 module RubyLLM
   class CodeMode
     class << self
+      # The tool name presented to the model: the underscored class-name leaf
+      # (`MyApp::Tools::Weather` → `weather`, `SalesNotes` → `sales_notes`),
+      # without the `_tool` suffix. The base RubyLLM::Tool.tool_name would
+      # leak the namespace (`ruby_llm--code_mode`), so CodeMode derives the
+      # name from the leaf only.
       def tool_name
         leaf = name.to_s.split('::').last
         return '' unless leaf
@@ -10,10 +15,19 @@ module RubyLLM
         RubyLLM::Support::Utils.underscore(leaf).delete_suffix('_tool')
       end
 
+      # Mounts a host folder into the sandbox as read-only. `source:` is
+      # expanded against the boot working directory (absolute paths pass
+      # through); `dest:` must be absolute, unique and outside the reserved
+      # trees (`/work`, `/usr`, `/src`). Invalid declarations raise
+      # ArgumentError at class-definition time, so a misconfigured tool
+      # never reaches a live chat.
       def mount(source:, dest:, description: nil)
         add_mount(source, dest, :read_only, description)
       end
 
+      # Same as .mount, but the sandboxed code can create, modify and delete
+      # files inside the folder (enforced by wasmtime; the contents persist
+      # between executions of the same tool instance).
       def mount_rw(source:, dest:, description: nil)
         add_mount(source, dest, :read_write, description)
       end
@@ -64,10 +78,19 @@ module RubyLLM
         Registry.register_mcps(tools, mcps, servers, inputs)
       end
 
+      # The mounts declared so far, as Mount structs (read-only and
+      # read-write together, in declaration order). Subclasses start with a
+      # copy of the parent's list, so adding to a child never touches the
+      # parent.
       def mounts
         @mounts ||= []
       end
 
+      # Builds and memoizes the SecurityBox::Configuration for this class:
+      # the default limits (timeout_ms: 30_000, fuel_ms: 10_000), the
+      # declared mounts and one RPC handler per bound tool. Memoized per
+      # class; subclasses build their own. Tool instances without
+      # per-instance additions share it (see #add_tools).
       def configuration
         @configuration ||= SecurityBox::Configuration.build(
           timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -77,10 +100,17 @@ module RubyLLM
         )
       end
 
+      # Pays the WebAssembly compilation cost up front (about 15 seconds on
+      # the first run, cached afterwards in ~/.cache/security_box/modules),
+      # so the first real execution takes a few hundred milliseconds
+      # instead. Call it once at boot: Analytics.warmup.
       def warmup
         SecurityBox.warmup(timeout_ms: DEFAULT_TIMEOUT_MS, fuel_ms: DEFAULT_FUEL_MS)
       end
 
+      # Ruby hook: subclasses start with a copy of the parent's mounts,
+      # tools and MCP servers (entries and instances shared), and their own
+      # configuration memo so limits/rpcs are rebuilt per class.
       def inherited(subclass)
         super
         subclass.instance_variable_set(:@mounts, mounts.dup)

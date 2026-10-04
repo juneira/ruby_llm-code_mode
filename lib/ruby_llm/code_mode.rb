@@ -15,6 +15,8 @@ module RubyLLM
                  'or "name" => tool pairs'
 
     Mount = Struct.new(:host, :guest, :mode, :description, keyword_init: true) do
+      # The hash shape SecurityBox::Configuration.build expects under
+      # `mounts:`.
       def payload
         { host: host, guest: guest, mode: mode }
       end

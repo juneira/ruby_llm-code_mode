@@ -32,8 +32,12 @@ module RubyLLM
     DESC
 
     class << self
-      # Builds the description the model sees. `extra_tools`/`extra_mcps`
-      # carry the per-instance additions (see #add_tools/#add_mcps); with no
+      # Builds the description the model sees for this tool: the fixed
+      # "How to use" text, one section per mount kind listing each mounted
+      # folder, the "Host tools (call with SB.call)" section with every
+      # bound tool and its parameters, and the "Server notes" section with
+      # each MCP server's instructions. `extra_tools`/`extra_mcps` carry
+      # the per-instance additions (see #add_tools/#add_mcps); with no
       # extras the output is identical to the class-level description.
       def build_description(extra_tools: {}, extra_mcps: [])
         read_only, read_write = mounts.partition { |m| m.mode == :read_only }
@@ -46,6 +50,10 @@ module RubyLLM
         ].compact.join("\n\n")
       end
 
+      # Reads the tool description the model sees (the build_description
+      # output). Passing a text raises ArgumentError: the description is
+      # built from the declared mounts, bound tools and MCP servers, and
+      # cannot be set by hand.
       def description(text = nil)
         raise ArgumentError,
               "RubyLLM::CodeMode builds the tool description from the declared mounts; " \

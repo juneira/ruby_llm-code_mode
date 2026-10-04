@@ -28,10 +28,21 @@ module RubyLLM
       Registry.register_mcps(instance_tools, instance_mcps, servers, inputs, reserved: self.class.tools)
     end
 
+    # The description this instance presents to the model: the class-level
+    # build plus the tools and MCP servers added with #add_tools/#add_mcps.
+    # RubyLLM reads it when the tool is registered with a chat, so call
+    # chat.with_tools after the additions.
     def description
       self.class.build_description(extra_tools: instance_tools, extra_mcps: instance_mcps)
     end
 
+    # Runs the model-generated Ruby script inside the sandbox and returns
+    # the result as a hash for the model: `status` ("ok", "error",
+    # "timeout", "fuel_exhausted", "memory_limit" or "sandbox_error"),
+    # `value` on success, `error` otherwise, plus `stdout`/`stderr` when
+    # the guest produced output. Sandbox failures (missing image, invalid
+    # configuration) come back as a recoverable "sandbox_error" instead of
+    # raising.
     def execute(code:)
       format_result(sandbox.eval(code))
     rescue SecurityBox::Error => e

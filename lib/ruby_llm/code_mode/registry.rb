@@ -56,10 +56,20 @@ module RubyLLM
           raise
         end
 
+        # One RPC handler per bound tool, ready for
+        # SecurityBox::Configuration.build(rpcs:). Each handler validates
+        # that the guest passed a hash of arguments, forwards the call to
+        # the tool instance (string keys symbolized, schema mistakes coming
+        # back as RubyLLM's recoverable error hash) and normalizes MCP
+        # Result objects into plain data for the guest.
         def rpc_handlers(tools)
           tools.transform_values { |entry| ->(args) { call_bound_tool(entry, args) } }
         end
 
+        # The "## Host tools (call with SB.call)" description section: the
+        # shared intro plus one line per tool with its description and
+        # parameter docs. Returns nil when no tools are bound, so the
+        # section is omitted from the description entirely.
         def tools_section(tools)
           return nil if tools.empty?
 
@@ -70,6 +80,9 @@ module RubyLLM
           ].join("\n")
         end
 
+        # The "## Server notes" description section: one line per connected
+        # MCP server that sent instructions. Returns nil when no server
+        # did, so the section is omitted from the description entirely.
         def server_notes_section(mcps)
           notes = mcps.filter_map do |entry|
             instructions = entry.instructions.to_s
