@@ -16,7 +16,6 @@ Gem::Specification.new do |spec|
 
   spec.homepage = "https://github.com/juneira/ruby_llm-code_mode"
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
-  spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = "https://github.com/juneira/ruby_llm-code_mode"
   spec.metadata["bug_tracker_uri"] = "https://github.com/juneira/ruby_llm-code_mode/issues"
   spec.metadata["changelog_uri"] = "https://github.com/juneira/ruby_llm-code_mode/releases"
